@@ -53,6 +53,8 @@ namespace PropnightRevival
         public Task<Dictionary<string, object>> Sessions() => Send(HttpMethod.Get, "/revival/sessions");
         public Task<Dictionary<string, object>> GetProfile() => Send(HttpMethod.Get, "/revival/profile");
         public Task<Dictionary<string, object>> PostReport(Dictionary<string, object> report) => Send(HttpMethod.Post, "/revival/report", report);
+        /// <summary>Discord sign-in page that links this account (Verified role on the Discord server).</summary>
+        public Task<Dictionary<string, object>> DiscordLink() => Send(HttpMethod.Post, "/revival/discord/link", new Dictionary<string, object>());
         public Task<Dictionary<string, object>> PostMatch(Dictionary<string, object> match) => Send(HttpMethod.Post, "/revival/match", match);
         /// <summary>category: game | crash | launcher | other; logs: zip (BugReport.CollectLogs) or null.</summary>
         public Task<Dictionary<string, object>> PostBug(string category, string description, byte[] logs) =>

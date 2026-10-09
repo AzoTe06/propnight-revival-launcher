@@ -36,6 +36,7 @@ namespace PropnightRevival
         List<Dictionary<string, object>> gamePlan;
         string launcherUpdate, manifestVersion;
         bool busy, playing, signedIn, closeConfirmed;
+        string discordName;   // linked Discord account (server), null when not linked
 
         public ShellForm()
         {
@@ -155,6 +156,7 @@ namespace PropnightRevival
                     case "pageError": Log.Write("page error: " + m.Str("message")); break;
                     case "dlc": await SetDlc(m.Str("id"), m.Bool("on")); break;
                     case "uninstall": await UninstallRevival(); break;
+                    case "discordLink": await LinkDiscord(); break;
                     case "bug": await SendBug(m.Str("category"), m.Str("text"), m.Bool("logs")); break;
                 }
             }
@@ -256,6 +258,7 @@ namespace PropnightRevival
         {
             settings.Username = account.Str("username");
             settings.SteamId = account.Str("steamId");
+            if (account.ContainsKey("discord")) discordName = account.Str("discord");
             var relay = account.Str("relayHost");
             if (relay != null && System.Text.RegularExpressions.Regex.IsMatch(relay, @"^\d{1,3}(\.\d{1,3}){3}$")) settings.RelayHost = relay;
             settings.Save();
@@ -270,12 +273,58 @@ namespace PropnightRevival
         async Task EnterHome()
         {
             signedIn = true;
-            State(new Dictionary<string, object> { ["view"] = "home", ["username"] = settings.Username, ["steamId"] = settings.SteamId, ["gameRoot"] = settings.GameRoot ?? "" });
+            State(new Dictionary<string, object> { ["view"] = "home", ["username"] = settings.Username, ["steamId"] = settings.SteamId, ["gameRoot"] = settings.GameRoot ?? "",
+                ["discord"] = discordName ?? "" });
             ShowIdleButton();
             updateTimer.Start();
             friendsTimer.Start();
             var _ = RefreshFriends();
+            var __ = RefreshDiscord();
             await CheckUpdates(quiet: false);
+        }
+
+        // ---- Discord (Settings): the server sends back a Discord sign-in page; once accepted the
+        // bot gives the Verified role. The launcher watches the account until the link shows up.
+        async Task RefreshDiscord()
+        {
+            try
+            {
+                var me = await api.Me();
+                discordName = me.Str("discord");
+                State(new Dictionary<string, object> { ["discord"] = discordName ?? "" });
+            }
+            catch (Exception e) { Log.Write("account refresh failed: " + e.Message); }
+        }
+
+        bool linkingDiscord;
+        async Task LinkDiscord()
+        {
+            if (linkingDiscord) return;
+            linkingDiscord = true;
+            try
+            {
+                var url = (await api.DiscordLink()).Str("url");
+                if (url == null || !url.StartsWith("https://discord.com/")) throw new Exception("unexpected answer from the server");
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+                Toast("info", "Link Discord", "Accept in your browser, then come back here.", 9000);
+                var before = discordName;
+                for (var i = 0; i < 60; i++)   // 5 minutes
+                {
+                    await Task.Delay(5000);
+                    var me = await api.Me();
+                    var now = me.Str("discord");
+                    if (now != null && now != before)
+                    {
+                        discordName = now;
+                        State(new Dictionary<string, object> { ["discord"] = now });
+                        Toast("good", "Discord linked", $"{now} has the Verified role on the Propnight Revival Discord.", 9000);
+                        return;
+                    }
+                }
+            }
+            catch (ApiException e) { Toast("bad", "Discord", e.Message, 8000); }
+            catch (Exception e) { Log.Write("discord link failed: " + e.Message); Toast("bad", "Discord", "Could not start the link. Try again later.", 8000); }
+            finally { linkingDiscord = false; }
         }
 
         // ---- friends (server: revival/server/src/friends.mjs)
