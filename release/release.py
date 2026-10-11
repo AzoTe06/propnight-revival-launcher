@@ -18,7 +18,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REVIVAL = HERE.parent
-COMMON = REVIVAL.parent                      # steamapps/common
+sys.path.insert(0, str(REVIVAL / "tools"))
+from game_root import COMMON  # noqa: E402  (reference install: steamapps/common)
 GAME = COMMON / "Propnight"                  # game root as seen by the launcher
 BASE_URL = "https://api.propnightrevival.online/updates/"   # manifest (VPS)
 R2_CONFIG = HERE / ".r2.json"
@@ -32,12 +33,13 @@ FILES = [
     "Propnight/Binaries/Win64/Mods/PropnightLoginBypasser/Scripts/main.lua",
     "Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/main.lua",
     "Propnight/Binaries/Win64/Mods/PropnightLocalMap/online.txt",
+    "Propnight/Binaries/Win64/Mods/PropnightLocalMap/avatar.png",   # squad / friends avatar picture
     "Propnight/Binaries/Win64/RevivalRelay/RevivalRelay.exe",
     "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalOnline_P.pak",
     # Steam emulator (Goldberg, LGPL): the game runs without Steam's client
     "Engine/Binaries/ThirdParty/Steamworks/Steamv147/Win64/steam_api64.dll",
 ]
-# Downloaded once (4 GB): frozen, fixes go to numbered patch paks.
+# Downloaded once (3 GB since 2026-10-10, without the 2022 Camp and Small Abbey): frozen, fixes go to numbered patch paks.
 LARGE_FILES = [
     "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMaps_P.pak",
 ]
@@ -45,21 +47,26 @@ LARGE_FILES = [
 # The menu pak goes with the maps: it lists them in the map selector.
 DLC_FILES = {
     "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMaps_P.pak": "classic-maps",
-    "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMenu_P.pak": "classic-maps",
+    # fixes over the frozen maps pak (higher priority): the game's own copy of the files the
+    # maps pak also holds, so its older copies no longer replace the last build's
+    "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMapsPatch_1_P.pak": "classic-maps",
+    # the selector list with the classic maps (+200: wins over the base list below)
+    "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMenuClassic_1_P.pak": "classic-maps",
 }
+# every player: the game's own map selector list, sorted A to Z (build_modpak.py menu: RevivalMenuBase.pak)
 FILES.append("Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMenu_P.pak")
+FILES.append("Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMenuClassic_1_P.pak")
+FILES.append("Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMapsPatch_1_P.pak")
 # Previews: cut from the October 2022 map selector atlas (revival/release/dlc, not published in the repo).
 DLC = [{
     "id": "classic-maps",
     "title": "Classic maps",
-    "description": "Four maps removed from Propnight over time, restored from older versions of the game: "
-                   "the daytime farm and the school of February 2022, and the Mansion and Summer camp of October 2022. "
-                   "Hosts can pick them in Custom Game; quick play only sends you to maps you have.",
+    "description": "Brings back maps that are no longer in the last version of Propnight, restored from older "
+                   "versions of the game. Hosts pick them in Custom Game; quick play only sends you to maps you have.",
     "maps": [
         {"name": "Farm (day)", "from": "February 2022", "image": "farm-day.jpg"},
         {"name": "School", "from": "February 2022", "image": "school.jpg"},
         {"name": "Mansion", "from": "October 2022", "image": "mansion.jpg"},
-        {"name": "Summer camp", "from": "October 2022", "image": "camp.jpg"},
     ],
 }]
 DLC_IMAGES = HERE / "dlc"

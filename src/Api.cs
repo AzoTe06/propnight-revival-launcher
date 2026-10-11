@@ -20,6 +20,9 @@ namespace PropnightRevival
         static Api()
         {
             ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | (SecurityProtocolType)12288; // TLS 1.2 + 1.3
+            // .NET Framework allows 2 connections per server by default: the friends long poll holds one
+            // for up to 20 s, and the update check, presence and profile calls (same server) queued behind it
+            ServicePointManager.DefaultConnectionLimit = 16;
             Http = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
             Http.DefaultRequestHeaders.UserAgent.ParseAdd("PropnightRevivalLauncher/" + Config.Version);
         }
@@ -61,9 +64,22 @@ namespace PropnightRevival
             Send(HttpMethod.Post, "/revival/bug", new Dictionary<string, object> { ["category"] = category, ["description"] = description,
                 ["version"] = Config.Version, ["logs"] = logs == null ? null : Convert.ToBase64String(logs) });
         public Task<Dictionary<string, object>> Friends() => Send(HttpMethod.Get, "/revival/friends");
-        /// <summary>request | accept | decline | remove | invite</summary>
+        /// <summary>Public games (server browser): map, players, phase, roles and ranks.</summary>
+        public Task<Dictionary<string, object>> Servers() => Send(HttpMethod.Get, "/revival/servers");
+        /// <summary>Long poll: the list once it differs from etag (the server waits up to 20 s).</summary>
+        public Task<Dictionary<string, object>> FriendsWait(string etag) =>
+            Send(HttpMethod.Post, "/revival/friends/wait", new Dictionary<string, object> { ["etag"] = etag });
+        /// <summary>Friend request by friend code (XXXX-XXXX): usernames are not enough to add someone.</summary>
+        public Task<Dictionary<string, object>> FriendRequest(string code) =>
+            Send(HttpMethod.Post, "/revival/friends/request", new Dictionary<string, object> { ["code"] = code });
+        /// <summary>decline-all</summary>
+        public Task<Dictionary<string, object>> FriendsPost(string path) => Send(HttpMethod.Post, "/revival/friends/" + path, new Dictionary<string, object>());
+        /// <summary>accept | decline | remove | invite (someone already in your lists)</summary>
         public Task<Dictionary<string, object>> Friend(string action, string username) =>
             Send(HttpMethod.Post, "/revival/friends/" + action, new Dictionary<string, object> { ["username"] = username });
+        /// <summary>Squad: invite | accept | decline | kick (username), leave (none).</summary>
+        public Task<Dictionary<string, object>> Squad(string action, string username) =>
+            Send(HttpMethod.Post, "/revival/squad/" + action, new Dictionary<string, object> { ["username"] = username ?? "" });
         /// <summary>role: host | client | menu (what the mod reports); server: ip:port of the game joined as a client.</summary>
         public Task<Dictionary<string, object>> Presence(bool game, string role, string server) =>
             Send(HttpMethod.Post, "/revival/presence", new Dictionary<string, object> { ["game"] = game, ["role"] = role, ["server"] = server });

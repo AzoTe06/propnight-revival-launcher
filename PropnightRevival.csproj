@@ -11,7 +11,7 @@
     <RootNamespace>PropnightRevival</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>1.9.1</Version>
+    <Version>1.14.4</Version>
     <Product>Propnight Revival Launcher</Product>
     <Copyright>MIT License</Copyright>
     <Deterministic>true</Deterministic>

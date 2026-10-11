@@ -22,14 +22,25 @@ namespace PropnightRevival
         readonly Api api = new Api();
         readonly WebView2 web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(7, 7, 12) };
         readonly Timer serverTimer = new Timer { Interval = 30_000 };
-        readonly Timer updateTimer = new Timer { Interval = 10 * 60_000 };
-        readonly Timer friendsTimer = new Timer { Interval = 8_000 };
+        // a launcher left open learns about a new release within a minute (small signed manifest, quiet check)
+        readonly Timer updateTimer = new Timer { Interval = 60_000 };
+        // presence: the mod's file is read every second and sent when it changes (or every 30 s)
+        readonly Timer friendsTimer = new Timer { Interval = 1_000 };
         readonly HashSet<string> seenInvites = new HashSet<string>();
+        // SERVERS tab: the public games, fetched every 5 s while the tab is shown
+        readonly Timer serversTimer = new Timer { Interval = 5_000 };
+        string lastHostOrder;
         DateTime lastPresence = DateTime.MinValue;
         string lastPresenceKey, lastFriendsKey;
         FormWindowState lastWindowState = FormWindowState.Normal;
         int? pendingJoinPort;
-        bool refreshingFriends;
+        bool refreshingFriends, pushingPresence;
+        string friendsEtag;
+        string addressProof; int addressProofPort; DateTime addressProofSent;
+        readonly HashSet<string> seenSquadInvites = new HashSet<string>();
+        string followSession; DateTime followAt; int followTries; string lastSocial;
+        readonly HashSet<string> reachedSessions = new HashSet<string>();   // leader's games already joined (or left)
+        int friendsLoop;   // generation of the friends long poll (a new one stops the old)
         static readonly Dictionary<string, int> HitTests = new Dictionary<string, int> {
             ["left"] = 10, ["right"] = 11, ["top"] = 12, ["topleft"] = 13, ["topright"] = 14, ["bottom"] = 15, ["bottomleft"] = 16, ["bottomright"] = 17 };
         Updater updater;
@@ -48,7 +59,8 @@ namespace PropnightRevival
             Controls.Add(web);
             serverTimer.Tick += async (s, e) => await RefreshServer();
             updateTimer.Tick += async (s, e) => { if (signedIn && !busy && !playing) await CheckUpdates(quiet: true); };
-            friendsTimer.Tick += async (s, e) => await RefreshFriends();
+            friendsTimer.Tick += async (s, e) => { await PushPresence(); await ModSocialActions(); };
+            serversTimer.Tick += async (s, e) => await RefreshServers();
             Load += async (s, e) => await InitWebView();
             try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
             EventHandler maxState = (s, e) => { if (web.CoreWebView2 != null && WindowState != FormWindowState.Minimized) State(new Dictionary<string, object> { ["maximized"] = WindowState == FormWindowState.Maximized }); };
@@ -122,6 +134,16 @@ namespace PropnightRevival
             }
         }
 
+        /// <summary>Another launcher was started: this one comes to the front instead (Program.RunUi).</summary>
+        public void ShowFromOtherInstance()
+        {
+            if (WindowState == FormWindowState.Minimized) { WindowState = FormWindowState.Normal; Restored(); }
+            Show();
+            TopMost = true; TopMost = false;   // in front of the window that started the second launcher
+            Activate();
+            Toast("info", "Already open", "The launcher was already running: here it is.", 3500);
+        }
+
         static string ReadUi()
         {
             using (var stream = typeof(ShellForm).Assembly.GetManifestResourceStream("PropnightRevival.ui.index.html"))
@@ -151,7 +173,10 @@ namespace PropnightRevival
                     case "openData": Directory.CreateDirectory(Config.DataDir); Process.Start("explorer.exe", Config.DataDir); break;
                     case "updateLauncher": await UpdateLauncher(); break;
                     case "play": await Play(); break;
-                    case "friend": await FriendAction(m.Str("action"), m.Str("username")); break;
+                    case "serversTab":
+                        if (m.Bool("on")) { serversTimer.Start(); await RefreshServers(); } else serversTimer.Stop();
+                        break;
+                    case "friend": await FriendAction(m.Str("action"), m.Str("username"), m.Str("code")); break;
                     case "join": await JoinFriend((int)m.Long("port"), m.Str("from"), m.Bool("dlc"), m.Str("map")); break;
                     case "pageError": Log.Write("page error: " + m.Str("message")); break;
                     case "dlc": await SetDlc(m.Str("id"), m.Bool("on")); break;
@@ -279,6 +304,7 @@ namespace PropnightRevival
             updateTimer.Start();
             friendsTimer.Start();
             var _ = RefreshFriends();
+            var _loop = FriendsLoop(++friendsLoop);
             var __ = RefreshDiscord();
             await CheckUpdates(quiet: false);
         }
@@ -328,10 +354,14 @@ namespace PropnightRevival
         }
 
         // ---- friends (server: revival/server/src/friends.mjs)
-        async Task RefreshFriends()
+        // The list comes from a long poll (POST /revival/friends/wait): the server answers as soon as
+        // something changes (a friend hosting or joining, an invite), so it shows within a second.
+
+        /// <summary>Sends where the game is (mod's presence file) when it changes, and every 30 s.</summary>
+        async Task PushPresence(bool force = false)
         {
-            if (!signedIn || refreshingFriends) return;
-            refreshingFriends = true;
+            if (!signedIn || pushingPresence) return;
+            pushingPresence = true;
             try
             {
                 var inGame = playing || GameInstall.IsRunning();
@@ -340,44 +370,255 @@ namespace PropnightRevival
                 where.TryGetValue("server", out var server);
                 role = role ?? "menu";
                 var presenceKey = $"{inGame}|{role}|{server}";
-                if (presenceKey != lastPresenceKey || DateTime.UtcNow - lastPresence > TimeSpan.FromSeconds(30))
+                if (force || presenceKey != lastPresenceKey || DateTime.UtcNow - lastPresence > TimeSpan.FromSeconds(30))
                 {
                     await api.Presence(inGame, role, role == "client" ? server : null);
                     lastPresence = DateTime.UtcNow;
                     lastPresenceKey = presenceKey;
                 }
-                var f = await api.Friends();
-                f["inGame"] = inGame;
-                State(new Dictionary<string, object> { ["friends"] = f });
-                var friendsKey = string.Join(",", f.Objs("friends").Select(x => x.Str("username") + ":" + x.Str("status")))
-                    + " | in " + string.Join(",", f.Strs("incoming")) + " | out " + string.Join(",", f.Strs("outgoing"));
-                if (friendsKey != lastFriendsKey) { Log.Write("friends: " + friendsKey); lastFriendsKey = friendsKey; }
-                foreach (var invite in f.Objs("invites"))
-                {
-                    var key = invite.Str("from") + "|" + invite.Str("at");
-                    if (!seenInvites.Add(key)) continue;
-                    var session = invite.Obj("session");
-                    Toast("info", invite.Str("from") + " invites you", $"{MapName(session.Str("map"))} · {session.Long("players")}/5 players", 30_000,
-                        new Dictionary<string, object> { ["label"] = "Join", ["cmd"] = "join", ["port"] = session.Long("port"), ["from"] = invite.Str("from"),
-                            ["dlc"] = session.Bool("dlc"), ["map"] = MapName(session.Str("map")) });
-                    if (WindowState == FormWindowState.Minimized && !playing) FlashWindow();
-                    // the game is running: the mod shows the invite in the game (F2 joins)
-                    if (GameInstall.IsRunning() && GameInstall.IsGameRoot(settings.GameRoot))
-                    {
-                        var name = new string((invite.Str("from") ?? "").Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
-                        var map = new string(MapName(session.Str("map")).Where(c => char.IsLetterOrDigit(c) || c == ' ' || c == '(' || c == ')').ToArray());
-                        try
-                        {
-                            File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-map-command.txt"),
-                                $"invite {session.Long("port")} {(session.Bool("dlc") ? 1 : 0)} {session.Long("players")} {name}|{map}");
-                        }
-                        catch (IOException e) { Log.Write("invite to game: " + e.Message); }
-                    }
-                }
+            }
+            catch (ApiException e) when (e.Status == 401 || e.Status == 403) { }
+            catch (Exception e) { Log.Write("presence: " + e.Message); }
+            finally { pushingPresence = false; }
+        }
+
+        async Task RefreshServers()
+        {
+            if (!signedIn) return;
+            try { State(new Dictionary<string, object> { ["servers"] = (await api.Servers()).Objs("servers").ToList() }); }
+            catch (Exception e) { Log.Write("servers: " + e.Message); }
+        }
+
+        /// <summary>Fetches the list at once (after an action, back from minimized).</summary>
+        async Task RefreshFriends()
+        {
+            if (!signedIn || refreshingFriends) return;
+            refreshingFriends = true;
+            try
+            {
+                await PushPresence();
+                ApplyFriends(await api.Friends());
             }
             catch (ApiException e) when (e.Status == 401 || e.Status == 403) { }
             catch (Exception e) { Log.Write("friends: " + e.Message); }
             finally { refreshingFriends = false; }
+        }
+
+        async Task FriendsLoop(int generation)
+        {
+            while (signedIn && generation == friendsLoop)
+            {
+                try
+                {
+                    var f = await api.FriendsWait(friendsEtag ?? "");
+                    if (generation != friendsLoop) break;
+                    ApplyFriends(f);
+                }
+                catch (ApiException e) when (e.Status == 401 || e.Status == 403) { await Task.Delay(10_000); }
+                catch (Exception e) { Log.Write("friends wait: " + e.Message); await Task.Delay(3_000); }
+            }
+        }
+
+        /// <summary>
+        /// Whether the game the player is in is public, for the mod (Win64\revival-game.txt): only public
+        /// games count for MMR, calibration and the leave penalty. Rewritten on every friends answer (at
+        /// least every 20 s, the long poll), with the time: the mod ignores an old file, and a missing or
+        /// old one means a private game.
+        /// </summary>
+        void WriteGameVisibility(Dictionary<string, object> session)
+        {
+            if (session == null || !GameInstall.IsRunning() || !GameInstall.IsGameRoot(settings.GameRoot)) return;
+            var at = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalSeconds;
+            try
+            {
+                File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-game.txt"),
+                    $"visibility={(session.Bool("public") ? "public" : "private")}\nport={session.Long("port")}\nat={at}\n");
+            }
+            catch (IOException e) { Log.Write("game visibility: " + e.Message); }
+        }
+
+        /// <summary>
+        /// Shows the relay the address this PC's game will use. The API is reached through Cloudflare,
+        /// often over IPv6, while the game reaches the relay over IPv4: a friend's private game only lets
+        /// in addresses the server knows for the host's friends, so without this the game was refused
+        /// (the invite "did nothing") whenever the launcher's last call went over IPv6. A UDP datagram
+        /// "P" + the account's secret proof to the relay's agent port, from the same machine as the game.
+        /// </summary>
+        void SendAddressProof(bool now)
+        {
+            if (addressProof == null || addressProofPort <= 0 || settings.RelayHost == null) return;
+            if (!now && DateTime.UtcNow - addressProofSent < TimeSpan.FromSeconds(20)) return;
+            addressProofSent = DateTime.UtcNow;
+            try
+            {
+                var bytes = new byte[17];
+                bytes[0] = (byte)'P';
+                for (int i = 0; i < 16; i++) bytes[i + 1] = Convert.ToByte(addressProof.Substring(i * 2, 2), 16);
+                using (var udp = new System.Net.Sockets.UdpClient(System.Net.Sockets.AddressFamily.InterNetwork))
+                    for (int i = 0; i < 2; i++) udp.Send(bytes, bytes.Length, settings.RelayHost, addressProofPort);
+            }
+            catch (Exception e) { Log.Write("address proof: " + e.Message); }
+        }
+
+        /// <summary>invite | accept | decline | kick (username), leave: from the page or from the game (the mod).</summary>
+        async Task SquadAction(string action, string username)
+        {
+            if (!new[] { "invite", "accept", "decline", "leave", "kick" }.Contains(action)) return;
+            if (action != "leave" && string.IsNullOrWhiteSpace(username)) return;
+            try
+            {
+                await api.Squad(action, username?.Trim());
+                if (action == "invite") Toast("good", "Squad invite sent", username + " can join your squad.");
+                else if (action == "accept") Toast("good", "Squad joined", "You now follow " + username + " into their games.");
+                else if (action == "leave") Toast("good", "Squad left", "You play on your own again.");
+            }
+            catch (ApiException e) { Toast("bad", "Squad", e.Message); }
+            await RefreshFriends();
+        }
+
+        /// <summary>
+        /// Requests from the game's own friends list and squad widget (the mod writes
+        /// Win64\revival-social-actions.txt: "invite NAME", "accept NAME", "decline NAME", "leave").
+        /// </summary>
+        async Task ModSocialActions()
+        {
+            if (!signedIn || !GameInstall.IsGameRoot(settings.GameRoot)) return;
+            var path = Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-social-actions.txt");
+            if (!File.Exists(path)) return;
+            string[] lines;
+            try
+            {
+                var taken = path + ".taken";
+                if (File.Exists(taken)) File.Delete(taken);
+                File.Move(path, taken);
+                lines = File.ReadAllLines(taken);
+                File.Delete(taken);
+            }
+            catch (IOException e) { Log.Write("social actions: " + e.Message); return; }
+            foreach (var line in lines.Take(10))
+            {
+                var parts = line.Trim().Split(new[] { ' ' }, 2);
+                if (parts.Length == 0 || parts[0].Length == 0) continue;
+                Log.Write("game social action: " + parts[0]);
+                await SquadAction(parts[0].ToLowerInvariant(), parts.Length > 1 ? parts[1] : null);
+            }
+        }
+
+        static string Clean(string s) => new string((s ?? "").Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
+
+        /// <summary>
+        /// The squad part of the friends view: invites (toast, and the game's dialog), following the leader
+        /// into its game, and Win64\revival-social.txt for the game's friends list and squad widget.
+        /// </summary>
+        void ApplySquad(Dictionary<string, object> f)
+        {
+            var squad = f.Obj("squad");
+            if (squad == null) return;
+            var running = GameInstall.IsRunning() && GameInstall.IsGameRoot(settings.GameRoot);
+            var win64 = running ? GameInstall.Win64(settings.GameRoot) : null;
+            foreach (var invite in squad.Objs("invites"))
+            {
+                var key = invite.Str("from") + "|" + invite.Str("at");
+                if (!seenSquadInvites.Add(key)) continue;
+                // no toast: the invite is in the Friends card (SQUAD INVITES) and, game running, in the game's dialog
+                if (running)
+                    try { File.WriteAllText(Path.Combine(win64, "revival-map-command.txt"), "squadinvite " + Clean(invite.Str("from"))); }
+                    catch (IOException e) { Log.Write("squad invite to game: " + e.Message); }
+            }
+            // follow the leader: once per game, again after 45 s if still not in it (3 tries). Once in it
+            // (the server stops asking), that game is never joined again by itself: a member who leaves
+            // the leader's game goes back to the menu and stays there until the leader is in another game
+            var follow = squad.Obj("follow");
+            if (follow == null)
+            {
+                if (followSession != null) reachedSessions.Add(followSession);
+                followSession = null;
+            }
+            else if (running && !reachedSessions.Contains(follow.Str("id")))
+            {
+                var id = follow.Str("id");
+                var again = id == followSession && followTries < 3 && DateTime.UtcNow - followAt > TimeSpan.FromSeconds(45);
+                if (id != followSession || again)
+                {
+                    followTries = id == followSession ? followTries + 1 : 1;
+                    followSession = id;
+                    followAt = DateTime.UtcNow;
+                    Log.Write("squad: following " + squad.Str("leader") + " (try " + followTries + ")");
+                    var _ = JoinFriend((int)follow.Long("port"), squad.Str("leader"), follow.Bool("dlc"), MapName(follow.Str("map")));
+                }
+            }
+            if (!running) return;
+            var sb = new System.Text.StringBuilder();
+            sb.Append("you\t").Append(Clean(squad.Str("you"))).Append('\n');
+            foreach (var fr in f.Objs("friends"))
+                // online in the game's list = in the game (playing, hosting, in a game): a friend with only the
+                // launcher open cannot follow a squad, so the game shows them offline
+                sb.Append("friend\t").Append(Clean(fr.Str("username"))).Append('\t')
+                  .Append(new[] { "playing", "hosting", "in_game" }.Contains(fr.Str("status")) ? 1 : 0)
+                  .Append('\t').Append(Clean(fr.Str("status"))).Append('\n');
+            foreach (var m in squad.Objs("members"))
+                sb.Append("squad\t").Append(Clean(m.Str("username"))).Append('\t').Append(m.Bool("leader") ? 1 : 0)
+                  .Append('\t').Append(m.Bool("online") ? 1 : 0).Append('\n');
+            var text = sb.ToString();
+            if (text == lastSocial) return;
+            try { File.WriteAllText(Path.Combine(win64, "revival-social.txt"), text); lastSocial = text; }
+            catch (IOException e) { Log.Write("social file: " + e.Message); }
+        }
+
+        void ApplyFriends(Dictionary<string, object> f)
+        {
+            friendsEtag = f.Str("etag");
+            f["inGame"] = playing || GameInstall.IsRunning();
+            State(new Dictionary<string, object> { ["friends"] = f });
+            var friendsKey = string.Join(",", f.Objs("friends").Select(x => x.Str("username") + ":" + x.Str("status")))
+                + " | in " + string.Join(",", f.Strs("incoming")) + " | out " + string.Join(",", f.Strs("outgoing"));
+            if (friendsKey != lastFriendsKey) { Log.Write("friends: " + friendsKey); lastFriendsKey = friendsKey; }
+            WriteGameVisibility(f.Obj("you")?.Obj("session"));
+            ApplySquad(f);
+            var you = f.Obj("you");
+            if (you != null && you.Str("proof") != null && you.ContainsKey("proofPort") && you["proofPort"] != null)
+            {
+                addressProof = you.Str("proof");
+                addressProofPort = (int)you.Long("proofPort");
+                SendAddressProof(false);
+            }
+            // quick play found no game: the server picked this player to host a public one (the mod does it)
+            var order = f.Obj("hostOrder");
+            if (order != null && order.Str("id") != lastHostOrder && GameInstall.IsRunning() && GameInstall.IsGameRoot(settings.GameRoot))
+            {
+                lastHostOrder = order.Str("id");
+                var map = new string((order.Str("map") ?? "").Where(char.IsLetterOrDigit).ToArray());
+                var role = new string((order.Str("role") ?? "any").Where(char.IsLetter).ToArray());
+                try
+                {
+                    File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-map-command.txt"), $"hostpublic {map} {role}");
+                    Toast("info", "No game found", $"Creating a public game on {MapName(map)}: other players searching will join you.", 8000);
+                    Log.Write($"quick play: hosting a public game on {map} as {role}");
+                }
+                catch (IOException e) { Log.Write("host order: " + e.Message); }
+            }
+            foreach (var invite in f.Objs("invites"))
+            {
+                var key = invite.Str("from") + "|" + invite.Str("at");
+                if (!seenInvites.Add(key)) continue;
+                var session = invite.Obj("session");
+                Toast("info", invite.Str("from") + " invites you", $"{MapName(session.Str("map"))} · {session.Long("players")}/5 players", 30_000,
+                    new Dictionary<string, object> { ["label"] = "Join", ["cmd"] = "join", ["port"] = session.Long("port"), ["from"] = invite.Str("from"),
+                        ["dlc"] = session.Bool("dlc"), ["map"] = MapName(session.Str("map")) });
+                if (WindowState == FormWindowState.Minimized && !playing) FlashWindow();
+                // the game is running: the mod shows the invite in the game
+                if (GameInstall.IsRunning() && GameInstall.IsGameRoot(settings.GameRoot))
+                {
+                    var name = new string((invite.Str("from") ?? "").Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
+                    var map = new string(MapName(session.Str("map")).Where(c => char.IsLetterOrDigit(c) || c == ' ' || c == '(' || c == ')').ToArray());
+                    try
+                    {
+                        File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-map-command.txt"),
+                            $"invite {session.Long("port")} {(session.Bool("dlc") ? 1 : 0)} {session.Long("players")} {name}|{map}");
+                    }
+                    catch (IOException e) { Log.Write("invite to game: " + e.Message); }
+                }
+            }
         }
 
         /// <summary>
@@ -463,7 +704,10 @@ namespace PropnightRevival
             await CheckUpdates(quiet: true);
         }
 
-        static string MapName(string map) => (map ?? "").Replace("_Main", "").Replace('_', ' ').Trim();
+        // map keys sent by the mod (hostMaps) -> names shown in the game's map selector
+        static readonly Dictionary<string, string> MapNames = new Dictionary<string, string> {
+            ["BigAbbey"] = "Abbey", ["BigFarm"] = "Farm (Night)", ["BigCircus"] = "Circus", ["SnowMain"] = "Fantasticville", ["BigEgypt"] = "Egypt", ["SummerCampMRG"] = "Camp", ["YagaMap"] = "Dark Swamp", ["Kitchen"] = "Kitchen", ["GoldenMine"] = "Goldhorn Mine", ["MansionReborn"] = "House", ["CampArena"] = "Summer Camp", ["Farm"] = "Farm (Day)", ["School"] = "School" };
+        static string MapName(string map) => map != null && MapNames.TryGetValue(map, out var name) ? name : (map ?? "").Replace("_Main", "").Replace('_', ' ').Trim();
 
         [DllImport("user32.dll")] static extern bool FlashWindow(IntPtr hwnd, bool invert);
         void FlashWindow() { try { FlashWindow(Handle, true); } catch { } }
@@ -485,15 +729,42 @@ namespace PropnightRevival
             State(done);
         }
 
-        async Task FriendAction(string action, string username)
+        async Task FriendAction(string action, string username, string code = null)
         {
-            if (!new[] { "request", "accept", "decline", "remove", "invite" }.Contains(action) || string.IsNullOrWhiteSpace(username)) return;
+            try
+            {
+                switch (action)
+                {
+                    case "request":
+                        if (string.IsNullOrWhiteSpace(code)) return;
+                        var sent = await api.FriendRequest(code.Trim());
+                        Toast("good", sent.Str("status") == "friends" ? "You are now friends" : "Friend request sent", sent.Str("username") ?? "");
+                        break;
+                    case "copyCode":
+                        // the code comes from the last friends list (never shown on screen for this)
+                        var mine = (await api.Friends()).Str("code");
+                        if (string.IsNullOrEmpty(mine)) return;
+                        Clipboard.SetText(mine);
+                        Toast("good", "Friend code copied", "Paste it to a friend: it is not shown on screen.");
+                        return;
+                    case "declineAll":
+                        await api.FriendsPost("decline-all");
+                        Toast("good", "Requests declined", "Every pending friend request was declined.");
+                        break;
+                }
+            }
+            catch (ApiException e) { Toast("bad", "Friends", e.Message); }
+            if (new[] { "request", "declineAll" }.Contains(action)) { await RefreshFriends(); return; }
+            if (action != null && action.StartsWith("squad"))
+            {
+                await SquadAction(action.Substring(5).ToLowerInvariant(), username);
+                return;
+            }
+            if (!new[] { "accept", "decline", "remove", "invite" }.Contains(action) || string.IsNullOrWhiteSpace(username)) return;
             try
             {
                 var r = await api.Friend(action, username.Trim());
-                if (action == "request")
-                    Toast("good", r.Str("status") == "friends" ? "You are now friends" : "Friend request sent", r.Str("username") ?? username.Trim());
-                else if (action == "accept") Toast("good", "You are now friends", username);
+                if (action == "accept") Toast("good", "You are now friends", username);
                 else if (action == "invite") Toast("good", "Invite sent", $"{username} can join your game from the launcher.");
             }
             catch (ApiException e) { Toast("bad", action == "invite" ? "Could not invite" : "Friends", e.Message); }
@@ -517,6 +788,7 @@ namespace PropnightRevival
                     File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-map-command.txt"), "missingmaps " + (map ?? ""));
                 return;
             }
+            SendAddressProof(true);   // the friend's private game must know this PC's address first
             if (GameInstall.IsRunning())
             {
                 File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-map-command.txt"), "joinrelay " + port);
@@ -549,7 +821,7 @@ namespace PropnightRevival
         {
             if (busy) return;
             busy = true;
-            SendUpdateState(checking: true);
+            if (!quiet) SendUpdateState(checking: true);
             try
             {
                 updater = new Updater(settings, (text, f) => { if (!quiet && gamePlan == null) PlayButton("play", "PLAY", text, f < 0 ? -1 : f, true, true); });
@@ -604,6 +876,8 @@ namespace PropnightRevival
             settings.Token = null; api.Token = null; settings.Save();
             updateTimer.Stop();
             friendsTimer.Stop();
+            friendsLoop++;
+            friendsEtag = null;
             seenInvites.Clear();
             ShowAuth("");
         }
@@ -634,7 +908,14 @@ namespace PropnightRevival
             {
                 PlayButton("launcher", "UPDATING", "Downloading the new launcher…", -1, true, true);
                 updater = updater ?? new Updater(settings, (t, f) => { });
-                var reporting = new Updater(settings, (t, f) => PlayButton("launcher", "UPDATING", t, f, true, true)) { Manifest = updater.Manifest };
+                // the manifest is read again: the one from the last check (up to 10 min old) could name an
+                // older launcher than the latest one published since (1.13 -> 1.14 -> 1.15 instead of 1.16)
+                var reporting = new Updater(settings, (t, f) => PlayButton("launcher", "UPDATING", t, f, true, true));
+                await reporting.LoadManifest();
+                updater.Manifest = reporting.Manifest;
+                launcherUpdate = reporting.LauncherUpdate();
+                if (launcherUpdate == null) { busy = false; ShowIdleButton(); SendUpdateState(); return; }
+                PlayButton("launcher", "UPDATING", $"Downloading launcher {launcherUpdate}…", -1, true, true);
                 await reporting.InstallLauncherUpdate();
                 Toast("good", "Launcher updated", "Restarting…", 3000);
                 await Task.Delay(1200);
@@ -656,7 +937,7 @@ namespace PropnightRevival
             {
                 var work = new Updater(settings, (text, f) => PlayButton("update", "UPDATING", text, f, true, true));
                 await work.LoadManifest();
-                if (work.LauncherUpdate() != null) { launcherUpdate = work.LauncherUpdate(); SendUpdateState(); Toast("warn", "Update required", "A new launcher was just published."); return; }
+                if (work.LauncherUpdate() != null) { updater = work; launcherUpdate = work.LauncherUpdate(); SendUpdateState(); Toast("warn", "Update required", "A new launcher was just published."); return; }
                 var plan = await work.Plan(settings.GameRoot);
                 await work.UpdateGame(settings.GameRoot, plan);
                 if (plan.Count > 0) Toast("good", "Game updated", $"{plan.Count} file(s) installed.");

@@ -2,6 +2,7 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 
@@ -63,16 +64,26 @@ namespace PropnightRevival
             return code;
         }
 
+        [DllImport("user32.dll")] static extern bool AllowSetForegroundWindow(int processId);
+
         static void RunUi()
         {
+            // a second launcher wakes the first one up (brought to the front) and exits: no dialog
+            using (var show = new EventWaitHandle(false, EventResetMode.AutoReset, "PropnightRevivalLauncher.Show"))
             using (var single = new Mutex(true, "PropnightRevivalLauncher", out var first))
             {
-                if (!first) { MessageBox.Show("The Propnight Revival launcher is already open.", "Propnight Revival"); return; }
+                if (!first) { AllowSetForegroundWindow(-1); show.Set(); return; }
                 Application.EnableVisualStyles();
                 Application.SetCompatibleTextRenderingDefault(false);
                 Application.ThreadException += (s, e) => { Log.Write("crash: " + e.Exception); MessageBox.Show(e.Exception.Message, "Propnight Revival"); };
                 PrepareWebView2Loader();
-                Application.Run(new ShellForm());
+                var form = new ShellForm();
+                var waiter = ThreadPool.RegisterWaitForSingleObject(show, (state, timedOut) =>
+                {
+                    try { if (form.IsHandleCreated) form.BeginInvoke((Action)form.ShowFromOtherInstance); } catch (InvalidOperationException) { }
+                }, null, -1, false);
+                Application.Run(form);
+                waiter.Unregister(null);
             }
         }
 
