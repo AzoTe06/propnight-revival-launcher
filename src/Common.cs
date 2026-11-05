@@ -14,6 +14,19 @@ namespace PropnightRevival
         public const string Api = "https://api.propnightrevival.online";
         public const string ManifestUrl = Api + "/updates/manifest.json";
         public const string SignatureUrl = Api + "/updates/manifest.sig";
+        /// <summary>
+        /// Folder of the update manifest: the public release, or the test channel. The beta code is not stored in
+        /// the launcher (its code is public): it is the name of the beta manifest's folder on the server, only known
+        /// to whoever was given it (release.py --beta, revival/release/.beta-code).
+        /// </summary>
+        public static string UpdatesBase(string betaCode) =>
+            Api + "/updates/" + (IsBetaCode(betaCode) ? "beta-" + betaCode.Trim() + "/" : "");
+        public static bool IsBetaCode(string code) =>
+            !string.IsNullOrWhiteSpace(code) && System.Text.RegularExpressions.Regex.IsMatch(code.Trim(), "^[A-Za-z0-9-]{8,64}$");
+        /// <summary>A diagnostic channel (code "diag-…"): the public build plus the mod's performance measurements
+        /// (Win64/revival-diag.txt). Like the test channel, its players play apart from the public (presence channel "beta").</summary>
+        public static bool IsDiagCode(string code) =>
+            IsBetaCode(code) && code.Trim().StartsWith("diag-", StringComparison.OrdinalIgnoreCase);
         // ECDSA P-256 public key (X||Y) of the update signing key (revival/release/signing-public-key.txt).
         public const string UpdatePublicKey = "DAShBnxG+tOeg2yvXcmhm85O8Myyv37T7HVVd7ld/YEViijaCNPNj8CFT+zovWcvrj9JdV8RKJga8HNS3o+zkg==";
         public static readonly string DataDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "PropnightRevival");

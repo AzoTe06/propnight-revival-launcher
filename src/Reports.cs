@@ -21,6 +21,7 @@ namespace PropnightRevival
         readonly Func<Dictionary<string, object>, string> describe;
         readonly SemaphoreSlim gate = new SemaphoreSlim(1, 1);
         Timer timer;
+        public Action<Dictionary<string, object>> Sent;   // each record the server took (the overlay's session counts)
 
         Reports(string file, Func<Dictionary<string, object>, Task> post, Func<Dictionary<string, object>, string> describe)
         {

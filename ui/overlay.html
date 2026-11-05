@@ -1,0 +1,520 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Propnight Revival overlay</title>
+<!-- The in-game overlay (2026-11-01): the launcher's window over the game (Overlay.cs), Shift + Tab. The validated canvas
+     "In-game overlay" (dark frosted glass readable on a bright map, the colour only in small touches), drawn on a 1920 x 1080
+     stage scaled to the game's window. Behind it: a capture of the game taken at the opening, blurred. The launcher sends
+     the state (render), the page sends the player's actions (send). -->
+<style>
+  :root {
+    --glass: rgba(12,14,22,0.62); --glass2: rgba(255,255,255,0.07); --line: rgba(255,255,255,0.12); --ink: #f4f2ef;
+    --muted: #c3c1cf; --faint: #9c9db0; --accent: #ef4550; --soft: #ff8a91; --good: #4ade80; --warn: #fbbf24;
+    --tint: rgba(255,255,255,0.06); --prim: rgba(255,255,255,0.16); --primline: rgba(255,255,255,0.26);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #080b14; color: var(--ink);
+    font-family: 'Segoe UI', system-ui, sans-serif; user-select: none; }
+  a { color: var(--soft); text-decoration: none; cursor: pointer; } a:hover { color: var(--ink); }
+  button { font-family: inherit; color: var(--ink); cursor: pointer; }
+  html.live, html.live body { background: transparent; } body.live #backdrop { display: none; } body.live #scrim { background: rgba(5,7,12,0.14); }
+  #backdrop { position: fixed; inset: -3%; background: #080b14 center / cover no-repeat; filter: blur(10px) brightness(0.72) saturate(115%); }
+  #scrim { position: fixed; inset: 0; background: rgba(5,7,12,0.30); }
+  #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; opacity: 0;
+    transition: opacity .16s ease; }
+  #stage.in { opacity: 1; }
+  .panel { position: absolute; background: var(--glass); border: 1px solid var(--line); border-radius: 18px;
+    backdrop-filter: blur(28px) saturate(140%); box-shadow: inset 0 1px 0 rgba(255,255,255,0.10); }
+  .label { font-size: 12px; font-weight: 800; letter-spacing: .12em; color: var(--muted); }
+  .btn { height: 38px; padding: 0 16px; border-radius: 9px; border: 1px solid var(--line); background: var(--glass2);
+    font: 700 14px 'Segoe UI', system-ui, sans-serif; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+  .btn.small { height: 30px; padding: 0 12px; font-size: 12px; }
+  .btn.prim { background: var(--prim); border-color: var(--primline); }
+  .btn:hover { background: rgba(255,255,255,0.13); } .btn.prim:hover { background: rgba(255,255,255,0.24); }
+  /* Join: the launcher's red button; "Joining…" waits with a spinner, the other Joins are off meanwhile */
+  .btn.go { background: linear-gradient(135deg, #ff5f68 0%, #ef4550 45%, #b8232f 100%); border-color: transparent; color: #fff;
+    box-shadow: 0 6px 18px rgba(239,69,80,0.38); }
+  .btn.go:hover { background: linear-gradient(135deg, #ff5f68 0%, #ef4550 45%, #b8232f 100%); box-shadow: 0 8px 24px rgba(239,69,80,0.55); }
+  .btn.joining { pointer-events: none; opacity: 0.85; } .btn[disabled] { opacity: 0.45; pointer-events: none; }
+  .bspin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff; animation: spin 0.8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .btn.done { color: var(--muted); cursor: default; } .btn.danger { border-color: rgba(239,69,80,0.6); color: var(--soft); }
+  .avatar { position: relative; flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--glass2);
+    display: flex; align-items: center; justify-content: center; font-weight: 800; }
+  .avatar.accent { background: rgba(239,69,80,0.30); }
+  .avatar .dot { position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #0c0f1a; }
+  svg { flex: none; }
+  /* top bar */
+  header { position: absolute; left: 0; right: 0; top: 0; height: 68px; display: flex; align-items: center; gap: 28px; padding: 0 28px;
+    background: rgba(10,12,18,0.72); backdrop-filter: blur(28px) saturate(140%); border-bottom: 1px solid var(--line); }
+  .logo { display: flex; flex-direction: column; line-height: 1; }
+  .logo b { font-size: 20px; font-weight: 900; color: var(--accent); } .logo span { font-size: 9px; font-weight: 800; letter-spacing: .32em; color: var(--muted); }
+  .chip { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 12px; background: var(--glass2); border: 1px solid var(--line); }
+  kbd { padding: 3px 8px; border-radius: 6px; border: 1px solid var(--line); color: var(--ink); font: 700 13px 'Segoe UI', sans-serif; }
+  .iconbtn { width: 40px; height: 40px; border-radius: 10px; border: 1px solid var(--line); background: var(--glass2); display: flex; align-items: center; justify-content: center; }
+  .iconbtn:hover { background: rgba(255,255,255,0.13); }
+  /* friends */
+  #friends { left: 40px; top: 100px; width: 420px; bottom: 40px; padding: 20px 16px; display: flex; flex-direction: column; }
+  .search { display: flex; align-items: center; gap: 8px; margin: 14px 6px 4px; height: 40px; padding: 0 12px; border-radius: 10px;
+    background: var(--glass2); border: 1px solid var(--line); color: var(--faint); }
+  .search input, .field { flex: 1; background: none; border: 0; color: var(--ink); font: 14px 'Segoe UI', sans-serif; outline: none; }
+  #flist { flex: 1; overflow-y: auto; margin-right: -8px; padding-right: 4px; }
+  #flist::-webkit-scrollbar { width: 6px; } #flist::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 3px; }
+  .group { margin: 16px 10px 4px; }
+  .friend { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 12px; }
+  .friend:hover { background: rgba(255,255,255,0.04); }
+  .friend .who { flex: 1; min-width: 0; } .friend .name { font-size: 15px; font-weight: 700; }
+  .friend .l1 { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .card { margin: 10px 6px 0; padding: 12px 14px; border-radius: 12px; background: rgba(239,69,80,0.16); border: 1px solid rgba(239,69,80,0.35); }
+  .card .row { display: flex; gap: 8px; margin-top: 10px; }
+  #addRow { display: none; margin: 10px 6px 0; gap: 8px; } #addRow.open { display: flex; }
+  #addRow .search { margin: 0; flex: 1; }
+  .foot { margin-top: 10px; padding: 12px 10px 0; border-top: 1px solid var(--line); display: flex; justify-content: space-between; font-size: 13px; color: var(--faint); }
+  .empty { padding: 18px 10px; font-size: 14px; color: var(--faint); }
+  /* centre */
+  #session { left: calc(50% - 450px); top: 100px; width: 900px; padding: 24px 26px; }
+  .stats { display: flex; gap: 12px; margin-top: 20px; }
+  .stat { flex: 1; padding: 14px 16px; border-radius: 12px; background: var(--glass2); }
+  .stat b { display: block; font-size: 26px; font-weight: 800; } .stat span { font-size: 12px; font-weight: 700; letter-spacing: .08em; color: var(--faint); }
+  #game { left: calc(50% - 450px); top: 360px; width: 900px; padding: 22px 26px; }
+  .mapcard { flex: none; width: 200px; height: 112px; border-radius: 12px; background: linear-gradient(160deg,#6a4a2a,#2a1a10) center / cover no-repeat;
+    text-shadow: 0 1px 6px rgba(0,0,0,0.8); box-shadow: inset 0 -50px 40px -10px rgba(0,0,0,0.55);
+    display: flex; align-items: flex-end; padding: 10px 12px; font-size: 18px; font-weight: 800; }
+  .player { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--line); }
+  .player .avatar { width: 30px; height: 30px; font-size: 13px; }
+  /* right */
+  #quick { right: 40px; top: 100px; width: 440px; padding: 22px 24px; }
+  #shorts { right: 40px; top: 476px; width: 440px; padding: 22px 24px; display: flex; flex-direction: column; gap: 10px; }
+  .shortcut { display: flex; align-items: center; gap: 12px; padding: 12px; border-radius: 12px; background: var(--glass2); border: 1px solid var(--line); color: var(--ink); }
+  .shortcut:hover { background: rgba(255,255,255,0.12); color: var(--ink); }
+  .shortcut .ico { width: 36px; height: 36px; border-radius: 10px; background: var(--tint); color: var(--soft); display: flex; align-items: center; justify-content: center; }
+  .slider { margin: 14px 0; } .slider .top { display: flex; justify-content: space-between; font-size: 14px; }
+  input[type=range] { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; margin: 14px 0 0; border-radius: 3px; outline: none;
+    background: linear-gradient(to right, rgba(255,255,255,0.75) var(--v, 50%), var(--glass2) var(--v, 50%)); }
+  input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: #fff; cursor: pointer; }
+  .toggle { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 14px 0; cursor: pointer; }
+  .toggle .hint { font-size: 12px; color: var(--faint); }
+  .knob { flex: none; width: 44px; height: 24px; border-radius: 12px; background: var(--glass2); border: 1px solid var(--line); position: relative; transition: background .15s; }
+  .knob::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .toggle.on .knob { background: var(--accent); } .toggle.on .knob::after { left: 22px; }
+  .select { display: flex; align-items: center; justify-content: space-between; margin: 14px 0; font-size: 14px; }
+  .select button { min-width: 190px; height: 36px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--glass2);
+    font: 600 13px 'Segoe UI', sans-serif; text-align: left; }
+  .select .fixed { min-width: 190px; padding: 8px 12px; border-radius: 9px; border: 1px solid var(--line); font-size: 13px; font-weight: 600; color: var(--muted); }
+  /* settings view */
+  /* a player's report (the launcher's, from Match history): reason, what happened, a clip for cheating and glitching */
+  #reportScrim { position: absolute; inset: 68px 0 0 0; background: rgba(5,7,12,0.5); display: none; }
+  #reportBox { position: absolute; left: calc(50% - 280px); top: 180px; width: 560px; padding: 26px 28px; display: none; background: rgba(12,14,22,0.94); }
+  body.reporting #reportScrim, body.reporting #reportBox { display: block; }
+  .reasons { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+  .reasons button { height: 34px; padding: 0 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--glass2); font: 600 13px 'Segoe UI', sans-serif; }
+  .reasons button.on { background: rgba(239,69,80,0.30); border-color: rgba(239,69,80,0.6); }
+  #reportText { width: 100%; height: 110px; resize: none; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--glass2);
+    color: var(--ink); font: 14px 'Segoe UI', sans-serif; outline: none; }
+  .rerr { color: var(--soft); font-size: 13px; min-height: 18px; margin-top: 8px; }
+  #settingsView { position: absolute; left: 500px; right: 40px; top: 100px; display: none; flex-direction: column; gap: 20px; }
+  #settingsView .cols { display: flex; gap: 20px; align-items: flex-start; }
+  #settingsView .panel { position: relative; flex: 1; padding: 24px 26px; }
+  .coltitle { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; color: var(--soft); }
+  .note { font-size: 12px; color: var(--faint); margin-top: 6px; }
+  body.settings #mainView { display: none; } body.settings #settingsView { display: flex; }
+  .off { opacity: .45; pointer-events: none; }
+</style>
+</head>
+<body>
+<div id="backdrop"></div><div id="scrim"></div>
+<div id="stage">
+  <header>
+    <div class="logo"><b>PROPNIGHT</b><span id="barTitle">REVIVAL · OVERLAY</span></div>
+    <div class="chip"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ff8a91" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg><span style="font-size:14px;color:var(--muted)">In game for</span><b id="barSession" style="font-size:16px">-</b></div>
+    <div id="barMatch" style="font-size:14px;color:var(--muted)"></div>
+    <div style="flex:1"></div>
+    <span style="font-size:13px;color:var(--faint)"><kbd>Shift</kbd> + <kbd>Tab</kbd> to close</span>
+    <span id="barClock" style="font-size:22px;font-weight:300"></span>
+    <button class="iconbtn" aria-label="Close the overlay" onclick="send('close')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </header>
+
+  <section class="panel" id="friends">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:0 6px">
+      <div><div class="label">FRIENDS</div><div id="fcount" style="font-size:13px;color:var(--faint);margin-top:2px"></div></div>
+      <button class="btn small" onclick="toggleAdd()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M19 8v6M16 11h6"/></svg> Add</button>
+    </div>
+    <div id="addRow">
+      <label class="search"><input class="field" id="addCode" placeholder="Their friend code" maxlength="40" onkeydown="if(event.key==='Enter')addFriend()"></label>
+      <button class="btn small prim" onclick="addFriend()">Send</button>
+      <button class="btn small" onclick="send('copyCode')" title="Copy your own friend code">My code</button>
+    </div>
+    <label class="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg><input class="field" id="fsearch" placeholder="Search friends" oninput="renderFriends()"></label>
+    <div id="invites"></div>
+    <div id="flist"></div>
+    <div class="foot"><span id="offCount"></span><a id="offToggle" onclick="showOffline=!showOffline;renderFriends()">Show</a></div>
+  </section>
+
+  <div id="mainView">
+    <section class="panel" id="session">
+      <div class="label">THIS SESSION</div>
+      <div style="display:flex;align-items:flex-end;gap:14px;margin-top:10px"><span id="sessBig" style="font-size:56px;font-weight:800;line-height:1">-</span><span id="sessSince" style="font-size:15px;color:var(--muted);padding-bottom:8px"></span></div>
+      <div style="font-size:12px;color:var(--faint);margin-top:6px">Public matches only: custom games do not count (no MMR).</div>
+      <div class="stats">
+        <div class="stat"><b id="stMatches">0</b><span>PUBLIC MATCHES</span></div>
+        <div class="stat"><b id="stWon" style="color:var(--good)">0</b><span>WON</span></div>
+        <div class="stat"><b id="stMmr">0</b><span>MMR</span></div>
+        <div class="stat"><b id="stLost">0</b><span>LOST</span></div>
+      </div>
+    </section>
+
+    <section class="panel" id="game">
+      <div style="display:flex;justify-content:space-between;align-items:center"><div class="label">THIS GAME</div><span id="gameHost" style="font-size:13px;color:var(--muted)"></span></div>
+      <div style="display:flex;gap:18px;margin-top:14px"><div class="mapcard" id="gameMap">-</div><div style="flex:1" id="gamePlayers"></div></div>
+    </section>
+
+    <section class="panel" id="quick">
+      <div class="label">QUICK SETTINGS</div>
+      <div class="slider" data-field="SoundSettingsMain"><div class="top"><span>Game volume</span><b></b></div><input type="range" min="0" max="100" step="5"></div>
+      <div class="slider" data-field="VoiceVolume"><div class="top"><span>Voice chat</span><b></b></div><input type="range" min="0" max="100" step="5"></div>
+      <div class="toggle" data-mute="IsVoiceChatMuted?" data-key="voiceMuted"><div><div style="font-size:14px">Mute voice chat</div><div class="hint">Nobody's voice, until switched back</div></div><span class="knob"></span></div>
+      <div class="toggle" data-fps="1"><div style="font-size:14px">FPS counter</div><span class="knob"></span></div>
+      <div class="toggle" data-pref="notify"><div><div style="font-size:14px">Notifications</div><div class="hint">Friends online, invites</div></div><span class="knob"></span></div>
+      <a style="display:block;margin-top:6px;font-size:14px;font-weight:700" onclick="document.body.classList.add('settings');document.getElementById('barTitle').textContent='REVIVAL · SETTINGS'">All overlay settings →</a>
+    </section>
+
+    <section class="panel" id="shorts">
+      <div class="label" style="margin-bottom:4px">SHORTCUTS</div>
+      <a class="shortcut" onclick="send('launcher',{page:'report'})"><span class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg></span><span><b style="font-size:14px">Report a player</b><br><span style="font-size:12px;color:var(--faint)">From this game, with a clip</span></span></a>
+      <a class="shortcut" onclick="send('launcher',{page:'bug'})"><span class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="6" width="8" height="14" rx="4"/><path d="M19 7l-3 2M5 7l3 2M19 19l-3-2M5 19l3-2M20 13h-4M4 13h4M10 4l1 2M14 4l-1 2"/></svg></span><span><b style="font-size:14px">Report a bug</b><br><span style="font-size:12px;color:var(--faint)">Your game's logs are attached</span></span></a>
+      <a class="shortcut" onclick="send('launcher',{page:'news'})"><span class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg></span><span><b style="font-size:14px">Patch notes</b><br><span style="font-size:12px;color:var(--faint)">What changed lately</span></span></a>
+      <a class="shortcut" onclick="send('launcher',{page:'home'})"><span class="ico"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg></span><span><b style="font-size:14px">Open the launcher</b><br><span style="font-size:12px;color:var(--faint)">Friends, servers, maps</span></span></a>
+    </section>
+  </div>
+
+  <div id="reportScrim" onclick="closeReport()"></div>
+  <section class="panel" id="reportBox">
+    <div style="display:flex;justify-content:space-between;align-items:center"><div><div style="font-size:22px;font-weight:800">Report <span id="reportName"></span></div>
+      <div style="font-size:13px;color:var(--muted);margin-top:2px">The team reviews every report. A false report can get you warned.</div></div>
+      <button class="iconbtn" aria-label="Close" onclick="closeReport()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+    <div class="reasons" id="reportReasons">
+      <button data-v="cheating">Cheating</button><button data-v="glitching">Glitching</button><button data-v="toxic">Toxic</button><button data-v="teaming">Teaming</button><button data-v="afk">AFK / not playing</button>
+    </div>
+    <textarea id="reportText" maxlength="1000" placeholder="What happened, and about when in the match?"></textarea>
+    <div style="display:flex;align-items:center;gap:10px;margin-top:12px"><button class="btn small" onclick="send('reportClip')">Add a clip</button>
+      <span id="reportClip" style="font-size:13px;color:var(--muted)"></span></div>
+    <div class="rerr" id="reportErr"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:6px"><button class="btn" onclick="closeReport()">Cancel</button><button class="btn prim" id="reportSend" onclick="sendReport()">Send the report</button></div>
+  </section>
+
+  <div id="settingsView">
+    <div style="display:flex;align-items:center;justify-content:space-between"><div><div style="font-size:28px;font-weight:800">Settings</div><div style="font-size:14px;color:var(--muted)">Saved at once: the game's own sound settings, the overlay's on this PC</div></div>
+      <button class="btn" onclick="document.body.classList.remove('settings');document.getElementById('barTitle').textContent='REVIVAL · OVERLAY'">Back to the overlay</button></div>
+    <div class="cols">
+      <section class="panel"><div class="coltitle"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M11 5L6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg><span class="label">AUDIO</span></div>
+        <div class="slider" data-field="SoundSettingsMain"><div class="top"><span>Game volume</span><b></b></div><input type="range" min="0" max="100" step="5"></div>
+        <div class="slider" data-field="SoundSettingsMusic"><div class="top"><span>Music</span><b></b></div><input type="range" min="0" max="100" step="5"></div>
+        <div class="slider" data-field="SoundSettingsSFX"><div class="top"><span>Effects</span><b></b></div><input type="range" min="0" max="100" step="5"></div>
+        <div class="slider" data-field="VoiceVolume"><div class="top"><span>Voice chat</span><b></b></div><input type="range" min="0" max="100" step="5"></div>
+      </section>
+      <section class="panel"><div class="coltitle"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg><span class="label">VOICE CHAT</span></div>
+        <div class="toggle" data-mute="IsVoiceChatMuted?" data-key="voiceMuted"><div><div style="font-size:14px">Mute voice chat</div><div class="hint">Nobody's voice, until switched back</div></div><span class="knob"></span></div>
+        <div class="toggle" data-mute="IsVoiceLinesMuted?" data-key="linesMuted"><div><div style="font-size:14px">Mute the characters' lines</div><div class="hint">Their shouts and remarks</div></div><span class="knob"></span></div>
+        <div class="note">The microphone and its key are set in the game's own settings (Esc › Settings).</div>
+      </section>
+      <section class="panel"><div class="coltitle"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M21.5 20a6.5 6.5 0 0 0-4-6"/></svg><span class="label">OVERLAY</span></div>
+        <div class="select"><span>Open with</span><span class="fixed">Shift + Tab</span></div>
+        <div class="toggle" data-pref="notifyOnline"><div style="font-size:14px">Friend online notifications</div><span class="knob"></span></div>
+        <div class="toggle" data-pref="notifyInvites"><div><div style="font-size:14px">Invite notifications</div><div class="hint">Answer them here, with Shift + Tab</div></div><span class="knob"></span></div>
+        <div class="select"><span>Notifications corner</span><button onclick="send('pref',{key:'right',on:!S.prefs.right})" id="cornerBtn">Top left ▾</button></div>
+        <div class="toggle" data-fps="1"><div style="font-size:14px">FPS counter</div><span class="knob"></span></div>
+        <div class="toggle" data-pref="timer"><div><div style="font-size:14px">Session timer in a corner</div><div class="hint">Time since the game opened</div></div><span class="knob"></span></div>
+      </section>
+    </div>
+  </div>
+</div>
+<script>
+  let S = { friends: [], squad: [], prefs: {}, settings: {} };
+  let showOffline = true, dragging = null;
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  function send(cmd, data) { window.chrome.webview.postMessage(Object.assign({ cmd }, data || {})); }
+
+  // the canvas's 1920 x 1080 layout at 86 % of the game's window (the canvas's size looked big in game, 2026-11-01): the
+  // stage fills the window, the panels keep to its edges and its middle
+  function fit() {
+    const k = Math.min(innerWidth / 1920, innerHeight / 1080) * 0.86;
+    const st = $("stage");
+    st.style.transform = `scale(${k})`;
+    st.style.width = innerWidth / k + "px";
+    st.style.height = innerHeight / k + "px";
+  }
+  addEventListener("resize", fit);
+  fit();
+  addEventListener("keydown", (e) => {
+    if (e.key === "Escape" || (e.key === "Tab" && e.shiftKey)) { e.preventDefault(); send("close"); }
+  });
+  addEventListener("contextmenu", (e) => e.preventDefault());
+
+  function duration(ms) {
+    const m = Math.max(0, Math.floor(ms / 60000)), h = Math.floor(m / 60);
+    return h > 0 ? `${h} h ${String(m % 60).padStart(2, "0")} min` : `${m} min`;
+  }
+  const hhmm = (d) => d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  function clock() {
+    $("barClock").textContent = hhmm(new Date());
+    if (S.sessionStart) {
+      const d = duration(Date.now() - S.sessionStart);
+      $("barSession").textContent = d;
+      $("sessBig").textContent = d;
+      $("sessSince").textContent = `since the game opened (${hhmm(new Date(S.sessionStart))})`;
+    }
+    const g = S.game;
+    if (g && g.inMatch && g.seconds != null) {
+      g.seconds = Math.max(0, g.seconds - 1);
+    }
+    renderBar();
+  }
+  setInterval(clock, 1000);
+
+  function avatar(name, accent, dot, size) {
+    const st = size ? ` style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.42)}px"` : "";
+    return `<span class="avatar${accent ? " accent" : ""}"${st}>${esc((name || "?")[0].toUpperCase())}${dot ? `<span class="dot" style="background:${dot}"></span>` : ""}</span>`;
+  }
+  function renderBar() {
+    const g = S.game, me = (g && g.players || []).find((p) => p.you);
+    if (g && g.inMatch) {
+      const left = g.seconds != null ? ` · <b style="color:var(--ink)">${Math.floor(g.seconds / 60)}:${String(g.seconds % 60).padStart(2, "0")}</b> left in the match` : "";
+      $("barMatch").innerHTML = `${esc(g.map)}${me ? " · " + (me.killer ? "Killer" : "Survivor") : ""}${left}`;
+    } else $("barMatch").textContent = g && g.role && g.role !== "menu" ? `${g.map || "Lobby"} · in the lobby` : "In the menu";
+  }
+
+  function friendAction(f) {
+    if (f.you || f.status === "offline") return "";
+    if (f.sameGame) return "";
+    if (f.session && f.session.joinable) {
+      if (joiningName() === f.name) return `<button class="btn small go joining"><span class="bspin"></span>Joining…</button>`;
+      const note = noteFor(f.name);
+      return `<button class="btn small go"${joiningName() || (note && note.kind === "no") ? " disabled" : ""}${note ? ` title="${esc(note.why)}"` : ""} onclick='join(this,${JSON.stringify(f.name)})'>${note ? esc(note.text) : "Join"}</button>`;
+    }
+    if (f.inSquad || f.session) return "";   // in a full game or a match: nothing to do from here
+    if (S.invited.includes(f.name)) return `<button class="btn small done">Invited ✓</button>`;
+    return `<button class="btn small prim" onclick='send("invite",{name:${JSON.stringify(f.name)}})'>Invite</button>`;
+  }
+  // Join as the launcher's Friends list: one at a time ("Joining…" until the launcher sees you in that game, a refusal comes
+  // back or 60 s pass: S.joining), never while hosting (your players would go back to the menu) or in a match; from a lobby,
+  // a second click ("Leave & join?") as you leave the game you are in. The page holds the click until the launcher's state
+  // says so (a spam of clicks sends one join)
+  // (the friends list is drawn again at each state: what a button says for 3 s is kept here)
+  let joinClicked = null, joinNote = null;
+  const joiningName = () => S.joining || (joinClicked && Date.now() - joinClicked.at < 3000 ? joinClicked.name : null);
+  const noteFor = (name) => joinNote && joinNote.name === name && Date.now() - joinNote.at < 3000 ? joinNote : null;
+  function setNote(name, kind, text, why) {
+    joinNote = { name, kind, text, why, at: Date.now() };
+    renderFriends();
+    setTimeout(renderFriends, 3050);
+  }
+  function join(btn, name) {
+    if (joiningName()) return;
+    if (S.youHosting) return setNote(name, "no", "You're hosting", "Leave your game first: your players would go back to the menu.");
+    if (S.youPhase === "match") return setNote(name, "no", "In a match", "Finish your match first, then join another game.");
+    const note = noteFor(name);
+    if (S.youPhase && !(note && note.kind === "sure")) return setNote(name, "sure", "Leave & join?", "You leave the game you are in");
+    joinNote = null;
+    joinClicked = { name, at: Date.now() };
+    renderFriends();
+    send("join", { name });
+  }
+  function friendLine(f) {
+    if (f.you) return [(f.leader ? "Leader · " : "") + "You", "var(--muted)"];
+    const s = f.session;
+    if (f.sameGame) return ["In your game" + (s && s.phase === "match" ? " · in this match" : ""), "var(--good)"];
+    if (s) {
+      const where = `${s.map} ${s.players}/5`;
+      if (s.phase === "match") return [`In a match · ${where}`, "var(--soft)"];
+      return [(f.status === "hosting" ? "Hosting " : "In a game · ") + `${s.map} · lobby ${s.players}/5`, "var(--soft)"];
+    }
+    return [{ playing: "In the menu", online: "In the launcher", hosting: "Hosting a game", in_game: "In a game", offline: "Offline" }[f.status] || f.status, "var(--muted)"];
+  }
+  function friendRow(f) {
+    const [line, colour] = friendLine(f);
+    const online = f.status !== "offline" || f.you;
+    const dot = !online ? "var(--faint)" : f.session && !f.sameGame ? "var(--accent)" : "var(--good)";
+    return `<div class="friend">${avatar(f.name, !!(f.session && !f.sameGame) || f.leader, dot)}<div class="who"><div class="name">${esc(f.name)}</div><div class="l1" style="color:${colour}">${esc(line)}</div></div>${friendAction(f)}</div>`;
+  }
+  function renderFriends() {
+    const q = $("fsearch").value.trim().toLowerCase();
+    const match = (f) => !q || f.name.toLowerCase().includes(q);
+    const squadNames = new Set((S.squad || []).map((m) => m.name));
+    const all = S.friends.map((f) => Object.assign({}, f, { inSquad: squadNames.has(f.name) }));
+    const groups = [["IN YOUR GAME", all.filter((f) => f.sameGame)],
+      ["SQUAD", (S.squad || []).map((m) => m.name === S.you ? { name: m.name, you: true, leader: m.leader, status: "online" }
+        : Object.assign({ status: m.online ? "online" : "offline" }, all.find((f) => f.name === m.name) || { name: m.name }, { leader: m.leader, inSquad: true }))],
+      ["IN A GAME", all.filter((f) => !f.sameGame && !f.inSquad && f.session && f.status !== "offline")],
+      ["ONLINE", all.filter((f) => !f.sameGame && !f.inSquad && !f.session && f.status !== "offline")]];
+    const offline = all.filter((f) => f.status === "offline" && !f.inSquad);
+    if (showOffline) groups.push(["OFFLINE", offline]);
+    let html = "";
+    for (const [title, list] of groups) {
+      const shown = list.filter(match);
+      if (!shown.length) continue;
+      html += `<div class="label group">${title} · ${shown.length}</div>` + shown.map(friendRow).join("");
+    }
+    if (!html) html = `<div class="empty">${S.friends.length ? (q ? "No friend by that name." : "None of your friends is online.") : "No friends yet: press Add and type their friend code."}</div>`;
+    $("flist").innerHTML = html;
+    const online = all.filter((f) => f.status !== "offline").length;
+    $("fcount").textContent = `${online} online · ${all.length} friend${all.length === 1 ? "" : "s"}`;
+    $("offCount").textContent = `Offline · ${offline.length}`;
+    $("offToggle").textContent = showOffline ? "Hide" : "Show";
+    // invitations waiting: to a squad, to a game
+    $("invites").innerHTML = (S.squadInvites || []).map((from) =>
+      `<div class="card"><div style="font-size:14px"><b>${esc(from)}</b> <span style="color:var(--muted)">invites you to their squad</span></div><div class="row"><button class="btn small prim" onclick='send("squad",{action:"accept",name:${JSON.stringify(from)}})'>Accept</button><button class="btn small" onclick='send("squad",{action:"decline",name:${JSON.stringify(from)}})'>Decline</button></div></div>`).join("")
+      + (S.gameInvites || []).map((i) =>
+      `<div class="card"><div style="font-size:14px"><b>${esc(i.from)}</b> <span style="color:var(--muted)">invites you · ${esc(i.map)} ${i.players}/5</span></div><div class="row"><button class="btn small go"${joiningName() ? " disabled" : ""} onclick='this.disabled=true;send("joinInvite",{key:${JSON.stringify(i.key)}})'>Join</button><button class="btn small" onclick='send("dismissInvite",{key:${JSON.stringify(i.key)}})'>Later</button></div></div>`).join("");
+  }
+  function toggleAdd() { $("addRow").classList.toggle("open"); if ($("addRow").classList.contains("open")) $("addCode").focus(); }
+  function addFriend() { const c = $("addCode").value.trim(); if (!c) return; send("addFriend", { code: c }); $("addCode").value = ""; $("addRow").classList.remove("open"); }
+
+  // the site's map pictures (as the launcher's SERVERS tab); the main menu: the game's poster
+  const SITE = "https://propnightrevival.online";
+  const MAP_IMAGES = { Abbey: "abbey", "Abbey (2021)": "abbey-2021", "Farm (Night)": "farm-night", Circus: "circus", Fantasticville: "fantasticville",
+    Egypt: "egypt", Camp: "camp", "Camp (2021)": "camp-2021", "Dark Swamp": "dark-swamp", Kitchen: "kitchen", "Goldhorn Mine": "golden-mine",
+    House: "mansion", "House (2021)": "house-2021", "House (2022)": "house-2022", "Summer Camp": "camp-2022", "Farm (Day)": "farm-day",
+    School: "school", "School (2022)": "school-2022", Castle: "castle", Village: "village" };
+  function mapImage(name) {
+    const image = MAP_IMAGES[name] || MAP_IMAGES[String(name || "").replace(/ \((Reborn|2022|2021)\)$/, "")];
+    return image ? `${SITE}/img/maps/${image}.jpg` : "";
+  }
+  // the pawn's class (the mod: "Surv5", "Nina", "Banshee_Special") -> the name the game shows (the server's lists:
+  // admin.mjs KILLERS / SURVIVORS, inventory.mjs's shown names)
+  const SURVIVORS = ["Isaac", "Taiga", "Chris", "Mable", "Kate", "Jun", "Aisha", "Michelle", "Stéphane", "Fei"];
+  const KILLER_CLASSES = { Banshee: "Banshee", Banshee_Special: "Banshee (Nurse)", Doppelganger: "Impostor", Granny: "Granny",
+    Granny_Special: "Granny (Yaga)", Vampire: "Vampire", Vampire_Special: "Vampire (Hunt)", Rabbit: "Rabbit", SheetMan: "Sheetman",
+    Nina: "Maddy", Possum: "Possum", ClownKiller: "Clown", Samurai: "Shinigami", Keymaster: "Keymaster" };
+  function characterName(raw, killer) {
+    raw = String(raw || "");
+    const surv = raw.match(/^Surv(\d+)$/);
+    if (surv) return SURVIVORS[Number(surv[1]) - 1] || raw;
+    if (KILLER_CLASSES[raw]) return KILLER_CLASSES[raw];
+    return raw ? raw.replace(/_/g, " ") : killer ? "Killer" : "Survivor";
+  }
+  function renderGame() {
+    const g = S.game || {};
+    const s = S.session || { matches: 0, won: 0, mmr: 0 };
+    $("stMatches").textContent = s.matches;
+    $("stWon").textContent = s.won;
+    $("stLost").textContent = s.matches - s.won;
+    // as the launcher's last match: +5 green, −5 red, 0 white
+    $("stMmr").textContent = s.mmr > 0 ? "+" + s.mmr : s.mmr < 0 ? "−" + -s.mmr : "0";
+    $("stMmr").style.color = s.mmr > 0 ? "var(--good)" : s.mmr < 0 ? "var(--soft)" : "var(--ink)";
+    const inMenu = !g.inMatch && (!g.role || g.role === "menu");
+    const label = inMenu ? "Main menu" : g.map || "Lobby";
+    $("gameMap").textContent = label;
+    const art = inMenu ? "" : mapImage(g.map);   // the menu: its own picture to come (the corridor, no HUD)
+    $("gameMap").style.backgroundImage = art ? `url("${art}")` : "";
+    $("gameHost").textContent = g.role === "host" ? "You host it" : g.role === "client" ? "Hosted by another player" : "";
+    const players = g.players || [];
+    $("gamePlayers").innerHTML = players.length ? players.map((p) =>
+      `<div class="player">${avatar(p.name, p.killer, null, 30)}<span style="flex:1;font-size:14px;font-weight:600">${esc(p.name)}${p.you ? " (you)" : ""}</span><span style="font-size:13px;color:${p.killer ? "var(--soft)" : "var(--muted)"}">${p.killer ? "Killer" : "Survivor"} · ${esc(characterName(p.character, p.killer))}</span><span style="font-size:13px;color:var(--faint);width:60px;text-align:right">${p.ping > 0 ? p.ping + " ms" : p.you ? "" : "host"}</span>${p.you ? '<span style="width:44px"></span>' : `<button class="btn small" title="Report ${esc(p.name)}" onclick='openReport(${JSON.stringify(p.name)})'><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg></button>`}</div>`).join("")
+      : `<div class="empty" style="padding:8px 0">${g.inMatch ? "Reading the players…" : "Not in a match: the players show here during a match."}</div>`;
+  }
+
+  // a player's report
+  let reportFor = "", reportReason = "", reportSending = false;
+  function openReport(name) {
+    reportFor = name; reportReason = ""; reportSending = false;
+    $("reportName").textContent = name;
+    $("reportText").value = "";
+    $("reportErr").textContent = "";
+    S.report = null;
+    send("reportReset");
+    renderReport();
+    document.body.classList.add("reporting");
+  }
+  function closeReport() { document.body.classList.remove("reporting"); }
+  $("reportReasons").addEventListener("click", (e) => { const b = e.target.closest("[data-v]"); if (b) { reportReason = b.dataset.v; renderReport(); } });
+  const reportNeedsClip = (r) => r === "cheating" || r === "glitching";
+  function renderReport() {
+    for (const b of $("reportReasons").querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === reportReason);
+    const r = S.report || {};
+    $("reportClip").textContent = r.clip ? `${r.clip} · ${(r.size / 1048576).toFixed(1)} MB` : reportNeedsClip(reportReason) ? "Required for this reason (8 MB at most)" : "Optional (8 MB at most)";
+    if (r.error) $("reportErr").textContent = r.error;
+    $("reportSend").disabled = reportSending;
+    $("reportSend").textContent = reportSending ? "Sending…" : "Send the report";
+    if (r.sent && r.name && document.body.classList.contains("reporting")) {
+      closeReport();
+      $("reportErr").textContent = "";
+    }
+  }
+  function sendReport() {
+    if (!reportReason) { $("reportErr").textContent = "Pick a reason."; return; }
+    if (reportNeedsClip(reportReason) && !(S.report && S.report.clip && !S.report.error)) { $("reportErr").textContent = "Add a clip that shows it."; return; }
+    reportSending = true; $("reportErr").textContent = "";
+    renderReport();
+    send("report", { name: reportFor, reason: reportReason, text: $("reportText").value });
+  }
+
+  // settings: sliders (sent when let go), toggles
+  document.querySelectorAll(".slider").forEach((el) => {
+    const input = el.querySelector("input");
+    input.addEventListener("input", () => { dragging = el.dataset.field; paint(el, input.value / 100); });
+    input.addEventListener("change", () => {
+      const v = input.value / 100;
+      S.settings[el.dataset.field] = v;
+      send("gameSetting", { verb: "vol", field: el.dataset.field, value: v });
+      setTimeout(() => { dragging = null; }, 1500);
+      renderSettings();
+    });
+  });
+  function paint(el, v) {
+    const input = el.querySelector("input");
+    el.querySelector("b").textContent = v == null ? "-" : Math.round(v * 100) + "%";
+    input.style.setProperty("--v", (v == null ? 0 : v * 100) + "%");
+  }
+  document.querySelectorAll(".toggle").forEach((el) => el.addEventListener("click", () => {
+    const on = !el.classList.contains("on");
+    if (el.dataset.mute) { S.settings[el.dataset.key] = on; send("gameSetting", { verb: "mute", field: el.dataset.mute, value: on ? 1 : 0 }); }
+    else if (el.dataset.fps) { S.fps = on; send("pref", { key: "fps", on }); }
+    else if (el.dataset.pref === "notify") { S.prefs.notifyOnline = S.prefs.notifyInvites = on; send("pref", { key: "notify", on }); }
+    else { S.prefs[el.dataset.pref] = on; send("pref", { key: el.dataset.pref, on }); }
+    renderSettings();
+  }));
+  function renderSettings() {
+    const st = S.settings || {}, have = !!S.hasSettings;
+    document.querySelectorAll(".slider").forEach((el) => {
+      const v = st[el.dataset.field];
+      el.classList.toggle("off", !have);
+      if (dragging === el.dataset.field) return;
+      el.querySelector("input").value = v == null ? 0 : Math.round(v * 100);
+      paint(el, v);
+    });
+    document.querySelectorAll(".toggle").forEach((el) => {
+      let on;
+      if (el.dataset.mute) { on = !!st[el.dataset.key]; el.classList.toggle("off", !have); }
+      else if (el.dataset.fps) on = !!S.fps;
+      else if (el.dataset.pref === "notify") on = !!(S.prefs.notifyOnline || S.prefs.notifyInvites);
+      else on = !!S.prefs[el.dataset.pref];
+      el.classList.toggle("on", on);
+    });
+    $("cornerBtn").textContent = (S.prefs.right ? "Top right" : "Top left") + " ▾";
+  }
+
+  // the launcher: render({...}) with what changed; open(backdrop) when the overlay shows
+  function render(state) {
+    Object.assign(S, state);
+    if (state.open) {
+      // live: the game runs behind the window (Windows blurs it); else the capture taken at the opening
+      document.body.classList.toggle("live", !state.backdrop);
+      document.documentElement.classList.toggle("live", !state.backdrop);
+      $("backdrop").style.backgroundImage = state.backdrop ? `url(${state.backdrop})` : "";
+      delete S.backdrop; delete S.open;
+      document.body.classList.remove("settings");
+      $("barTitle").textContent = "REVIVAL · OVERLAY";
+      $("stage").classList.remove("in");
+      requestAnimationFrame(() => requestAnimationFrame(() => $("stage").classList.add("in")));
+    }
+    S.invited = S.invited || [];
+    if (state.report !== undefined && state.report && (state.report.sent !== undefined)) reportSending = false;
+    renderFriends(); renderGame(); renderSettings(); renderBar(); renderReport(); clock();
+  }
+  window.chrome.webview.addEventListener("message", (e) => render(e.data));
+  send("ready");
+</script>
+</body>
+</html>

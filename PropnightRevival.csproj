@@ -11,8 +11,12 @@
     <RootNamespace>PropnightRevival</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>1.14.4</Version>
+    <Version>1.56.2</Version>
     <Product>Propnight Revival Launcher</Product>
+    <!-- the file's details (Properties > Details): who makes it and what it is -->
+    <Company>Propnight Revival</Company>
+    <AssemblyTitle>Propnight Revival Launcher</AssemblyTitle>
+    <Description>Launcher for the Propnight Revival community servers (open source, MIT)</Description>
     <Copyright>MIT License</Copyright>
     <Deterministic>true</Deterministic>
     <!-- no debug symbols: the exe must not carry the build machine's folder (PDB path) -->
@@ -31,6 +35,8 @@
   <ItemGroup>
     <!-- the interface and the WebView2 SDK files travel inside the exe -->
     <EmbeddedResource Include="ui\index.html" LogicalName="PropnightRevival.ui.index.html" />
+    <EmbeddedResource Include="ui\overlay.html" LogicalName="PropnightRevival.ui.overlay.html" />
+    <EmbeddedResource Include="ui\i18n\*.json" Exclude="ui\i18n\source.json" LogicalName="PropnightRevival.ui.i18n.%(Filename).json" />
     <EmbeddedResource Include="$(WebView2Dir)lib\net462\Microsoft.Web.WebView2.Core.dll" LogicalName="PropnightRevival.deps.Microsoft.Web.WebView2.Core.dll" />
     <EmbeddedResource Include="$(WebView2Dir)lib\net462\Microsoft.Web.WebView2.WinForms.dll" LogicalName="PropnightRevival.deps.Microsoft.Web.WebView2.WinForms.dll" />
     <EmbeddedResource Include="$(WebView2Dir)runtimes\win-x64\native\WebView2Loader.dll" LogicalName="PropnightRevival.deps.WebView2Loader.dll" />

@@ -32,8 +32,30 @@ namespace PropnightRevival
             // --check: verify the signed manifest and list what PLAY would change, without changing anything
             // (result in %APPDATA%\PropnightRevival\check.txt).
             if (args.Length > 0 && args[0] == "--check") return Check();
+            // started by the previous launcher once it put this exe in its place (Updater.InstallLauncherUpdate): wait for it
+            // to exit (its single-instance lock), then its renamed exe can be deleted
+            if (args.Length > 1 && args[0] == "--after-update" && int.TryParse(args[1], out var previous))
+                try { using (var p = System.Diagnostics.Process.GetProcessById(previous)) p.WaitForExit(15000); } catch (ArgumentException) { }
+            DeleteOldExes();
+            // a "Join" link from Discord (propnightrevival://join/<game>, see ShellForm.HandleLink): left for the launcher,
+            // this one or the one already open (woken up below)
+            var link = Array.Find(args, a => a.StartsWith(ShellForm.LinkScheme + "://", StringComparison.OrdinalIgnoreCase));
+            if (link != null)
+                try { Directory.CreateDirectory(Config.DataDir); File.WriteAllText(ShellForm.LinkFile, link); } catch (IOException) { }
             RunUi();
             return 0;
+        }
+
+        /// <summary>The "<exe>.old" files a launcher update left beside this exe (renamed while it ran).</summary>
+        static void DeleteOldExes()
+        {
+            try
+            {
+                var exe = Application.ExecutablePath;
+                foreach (var old in Directory.GetFiles(Path.GetDirectoryName(exe), Path.GetFileName(exe) + "*.old"))
+                    try { File.Delete(old); } catch (Exception) { }
+            }
+            catch (Exception) { }
         }
 
         static int Check()
