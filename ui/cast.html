@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Propnight Revival · Cast HUD</title>
+<style>
+  html, body { margin: 0; background: transparent; overflow: hidden; width: 100%; height: 100%; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; color: #f4f2ef; }
+  #stage { position: absolute; left: 0; top: 0; width: 1920px; height: 1080px; transform-origin: 0 0; display: none; }
+  #stage.on { display: block; }
+  .glass { background: rgba(12,14,22,0.72); border: 1px solid rgba(255,255,255,0.12); }
+  .label { font-size: 12px; font-weight: 800; letter-spacing: 0.14em; color: #c3c1cf; }
+  .tiny { font-size: 11px; font-weight: 800; letter-spacing: 0.14em; color: #9c9db0; }
+  .num { font-variant-numeric: tabular-nums; }
+  .ellipsis { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  #brand { position: absolute; left: 32px; top: 28px; display: flex; align-items: center; gap: 12px; }
+  #brand .live { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 14px; border-radius: 8px; background: var(--accent); font-size: 14px; font-weight: 800; letter-spacing: 0.12em; }
+  #brand .title { font-size: 15px; font-weight: 700; color: #c3c1cf; letter-spacing: 0.06em; }
+  body.ingame #brand { display: none; }
+
+  #top { position: absolute; left: 50%; top: 24px; transform: translateX(-50%); display: flex; align-items: stretch; border-radius: 14px; overflow: hidden; }
+  #top .cell { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 10px 26px; gap: 4px; }
+  #top .sep { width: 1px; background: rgba(255,255,255,0.12); }
+  #time { font-size: 30px; font-weight: 800; }
+  #gens { display: flex; gap: 6px; }
+  #gens div { width: 34px; height: 12px; border-radius: 3px; background: rgba(255,255,255,0.12); overflow: hidden; }
+  #gens i { display: block; height: 12px; }
+  #exits { font-size: 18px; font-weight: 800; color: #9c9db0; }
+
+  #survivors { position: absolute; left: 32px; top: 120px; width: 360px; display: flex; flex-direction: column; gap: 10px; }
+  .surv { display: flex; gap: 12px; align-items: center; padding: 12px 14px; border-radius: 14px; background: rgba(12,14,22,0.72); border: 1px solid rgba(255,255,255,0.12); }
+  .surv.follow { box-shadow: 0 0 0 2px var(--accent); }
+  .disc { width: 46px; height: 46px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,0.10); font-size: 16px; font-weight: 800; }
+  .surv .body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+  .surv .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .surv .name { font-size: 16px; font-weight: 800; }
+  .surv .char { font-size: 12px; font-weight: 700; color: #9c9db0; flex-shrink: 0; }
+  .bar { height: 8px; border-radius: 4px; background: rgba(255,255,255,0.10); overflow: hidden; }
+  .bar i { display: block; height: 8px; }
+  .chips { display: flex; gap: 6px; align-items: center; }
+  .chip { font-size: 11px; font-weight: 800; letter-spacing: 0.08em; padding: 2px 8px; border-radius: 6px; }
+  .asprop { font-size: 11px; font-weight: 700; color: #c3c1cf; }
+  .item { width: 22px; height: 22px; border-radius: 5px; background: rgba(255,255,255,0.10); border: 1px solid rgba(255,255,255,0.16); font-size: 10px; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+
+  #killerCol { position: absolute; right: 32px; top: 120px; width: 360px; display: flex; flex-direction: column; gap: 10px; }
+  #killer { display: flex; flex-direction: column; gap: 12px; padding: 14px 16px; border-radius: 14px; background: rgba(12,14,22,0.72); border: 1px solid rgba(239,69,80,0.55); }
+  #killer.follow { box-shadow: 0 0 0 2px var(--accent); }
+  #killer .head { display: flex; align-items: center; gap: 12px; }
+  #killer .disc { background: rgba(239,69,80,0.22); color: #ff8a91; }
+  #kStatus { font-size: 12px; font-weight: 800; color: #ff8a91; }
+  #spells { display: flex; gap: 10px; }
+  .spell { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 0; border-radius: 10px; background: rgba(255,255,255,0.06); }
+  .spell .ring { min-width: 36px; height: 36px; padding: 0 4px; box-sizing: border-box; border-radius: 18px; display: flex; align-items: center; justify-content: center; border: 3px solid; font-size: 12px; font-weight: 800; }
+  .spell .sname { font-size: 11px; font-weight: 700; color: #c3c1cf; }
+  #counts { display: flex; justify-content: space-between; font-size: 12px; font-weight: 700; color: #c3c1cf; }
+
+  #events { position: absolute; right: 32px; bottom: 140px; width: 360px; display: flex; flex-direction: column; gap: 8px; }
+  .event { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; font-size: 14px; font-weight: 600; }
+  .event .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .event .at { font-size: 12px; color: #9c9db0; }
+
+  #follow { position: absolute; left: 50%; bottom: 32px; transform: translateX(-50%); display: flex; align-items: center; gap: 18px; padding: 12px 22px; border-radius: 16px; background: rgba(12,14,22,0.78); border: 1px solid rgba(255,255,255,0.12); }
+  #fName { font-size: 20px; font-weight: 800; }
+  #fRole { font-size: 14px; font-weight: 700; color: #c3c1cf; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="brand">
+    <div class="live"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><circle cx="5" cy="5" r="5" fill="#ffffff"></circle></svg>LIVE</div>
+    <div class="title" id="title">PROPNIGHT REVIVAL</div>
+  </div>
+
+  <div id="top" class="glass">
+    <div class="cell"><div class="tiny">TIME</div><div id="time" class="num">00:00</div></div>
+    <div class="sep"></div>
+    <div class="cell"><div class="tiny" id="genLabel">GENERATORS</div><div id="gens"></div></div>
+    <div class="sep"></div>
+    <div class="cell"><div class="tiny">EXITS</div><div id="exits">LOCKED</div></div>
+  </div>
+
+  <div id="survivors"><div class="label">SURVIVORS</div><div id="survList" style="display:flex;flex-direction:column;gap:10px"></div></div>
+
+  <div id="killerCol">
+    <div class="label" style="text-align:right">KILLER</div>
+    <div id="killer">
+      <div class="head">
+        <div class="disc" id="kDisc">K</div>
+        <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+          <div id="kName" class="ellipsis" style="font-size:16px;font-weight:800"></div>
+          <div id="kChar" style="font-size:12px;font-weight:700;color:#9c9db0"></div>
+        </div>
+        <div id="kStatus"></div>
+      </div>
+      <div id="spells"></div>
+      <div id="counts"><div id="cDowns">Downs 0</div><div id="cChairs">Chairs 0</div><div id="cKills">Kills 0</div></div>
+    </div>
+  </div>
+
+  <div id="events"></div>
+
+  <div id="follow">
+    <div class="tiny" style="font-size:12px">FOLLOWING</div>
+    <div id="fName">Free camera</div>
+    <div id="fRole"></div>
+  </div>
+</div>
+<script>
+(() => {
+  const q = new URLSearchParams(location.search);
+  const ingame = q.get("ingame") === "1";
+  if (ingame) document.body.classList.add("ingame");
+  document.documentElement.style.setProperty("--accent", "#" + (/^[0-9a-f]{6}$/i.test(q.get("accent") || "") ? q.get("accent") : "ef4550"));
+  if (q.get("title")) document.getElementById("title").textContent = "PROPNIGHT REVIVAL · " + q.get("title").toUpperCase();
+  const stage = document.getElementById("stage");
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const clock = (s) => { s = Math.max(0, Math.floor(s || 0)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
+  const initials = (n) => { const w = String(n || "?").trim().split(/[ _\-.]+/).filter(Boolean); return ((w[0] || "?")[0] + (w[1] ? w[1][0] : "")).toUpperCase(); };
+  const STATES = {
+    HEALTHY: ["rgba(74,222,128,0.18)", "#86efac", "#4ade80", false],
+    HURT: ["rgba(251,191,36,0.18)", "#fcd34d", "#fbbf24", false],
+    DOWNED: ["rgba(239,69,80,0.22)", "#ff8a91", "#ef4550", true],
+    CARRIED: ["rgba(239,69,80,0.22)", "#ff8a91", "#ef4550", true],
+    "ON CHAIR": ["rgba(239,69,80,0.22)", "#ff8a91", "#ef4550", true],
+    ESCAPED: ["rgba(147,197,253,0.18)", "#93c5fd", "#93c5fd", false],
+    DEAD: ["rgba(255,255,255,0.10)", "#9c9db0", "#9c9db0", false],
+    OUT: ["rgba(255,255,255,0.10)", "#9c9db0", "#9c9db0", false],
+  };
+  const DOTS = { down: "#ef4550", chair: "#ef4550", dead: "#9c9db0", escape: "#93c5fd", free: "#93c5fd", gen: "#4ade80", exit: "#93c5fd" };
+
+  function fit() {
+    const k = Math.min(innerWidth / 1920, innerHeight / 1080);
+    stage.style.transform = `translate(${(innerWidth - 1920 * k) / 2}px, ${(innerHeight - 1080 * k) / 2}px) scale(${k})`;
+  }
+  addEventListener("resize", fit); fit();
+
+  function render(d) {
+    stage.classList.toggle("on", !!(d && d.active));
+    if (!d || !d.active) return;
+    $("time").textContent = clock(d.time);
+    const gens = d.gens || [];
+    const done = gens.filter((g) => g >= 1).length;
+    $("genLabel").textContent = `GENERATORS ${done} / ${gens.length}`;
+    $("gens").innerHTML = gens.map((g) => `<div><i style="width:${Math.round(Math.max(0, Math.min(1, g)) * 100)}%;background:${g >= 1 ? "#4ade80" : "#fbbf24"}"></i></div>`).join("");
+    $("exits").textContent = d.exits || "LOCKED";
+    $("exits").style.color = d.exits === "OPEN" ? "#93c5fd" : d.exits === "POWERED" ? "#86efac" : "#9c9db0";
+    const follow = d.follow ? d.follow.name : null;
+    $("survList").innerHTML = (d.survivors || []).map((s) => {
+      const st = STATES[s.state] || STATES.OUT;
+      const label = s.state === "ON CHAIR" && s.seat != null ? `ON CHAIR ${s.seat} S` : s.state;
+      const hp = s.state === "DEAD" || s.state === "ESCAPED" ? 0 : Math.round(Math.max(0, Math.min(1, (s.hp || 0) / (s.max || 100))) * 100);
+      const items = (s.items || []).map((i) => `<div class="item">${esc(i)}</div>`).join("");
+      return `<div class="surv${follow === s.name ? " follow" : ""}" style="border-color:${st[3] ? "rgba(239,69,80,0.55)" : "rgba(255,255,255,0.12)"}">
+        <div class="disc">${esc(initials(s.name))}</div>
+        <div class="body">
+          <div class="row"><div class="name ellipsis">${esc(s.name)}</div><div class="char">${esc(s.char)}</div></div>
+          <div class="bar"><i style="width:${hp}%;background:${st[2]}"></i></div>
+          <div class="chips"><div class="chip" style="background:${st[0]};color:${st[1]}">${esc(label)}</div>${s.prop ? '<div class="asprop">as prop</div>' : ""}<div style="flex:1"></div>${items}</div>
+        </div></div>`;
+    }).join("");
+    const k = d.killer;
+    $("killer").style.display = k ? "" : "none";
+    if (k) {
+      $("kName").textContent = k.name; $("kChar").textContent = k.char; $("kStatus").textContent = k.status || "";
+      $("kDisc").textContent = initials(k.name);
+      $("killer").classList.toggle("follow", follow === k.name);
+      $("spells").innerHTML = (k.spells || []).map((s) => `<div class="spell"><div class="ring num" style="border-color:${s.left == null ? "#4ade80" : "rgba(255,255,255,0.25)"}">${s.left == null ? "READY" : esc(s.left)}</div><div class="sname">${esc(s.name)}</div></div>`).join("");
+    }
+    const c = d.counts || {};
+    $("cDowns").textContent = "Downs " + (c.downs || 0); $("cChairs").textContent = "Chairs " + (c.chairs || 0); $("cKills").textContent = "Kills " + (c.kills || 0);
+    $("events").innerHTML = (d.events || []).map((e) => `<div class="event glass"><div class="dot" style="background:${DOTS[e.kind] || "#9c9db0"}"></div><div style="flex:1">${esc(e.text)}</div><div class="at num">${clock(e.at)}</div></div>`).join("");
+    $("fName").textContent = d.follow ? d.follow.name : "Free camera";
+    $("fRole").textContent = d.follow ? d.follow.role : "";
+  }
+
+  // the launcher captures this page for the spectator's own screen: told once each change is painted
+  const host = window.chrome && window.chrome.webview;
+  let last = null;
+  async function poll() {
+    try {
+      const r = await fetch("/state", { cache: "no-store" });
+      const text = await r.text();
+      if (text !== last) {
+        last = text;
+        let d = null; try { d = JSON.parse(text); } catch (e) { }
+        render(d);
+        if (host) requestAnimationFrame(() => requestAnimationFrame(() => host.postMessage({ cmd: "frame", active: !!(d && d.active) })));
+      }
+    } catch (e) { }
+    setTimeout(poll, 500);
+  }
+  poll();
+})();
+</script>
+</body>
+</html>

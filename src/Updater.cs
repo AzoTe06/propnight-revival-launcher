@@ -149,7 +149,55 @@ namespace PropnightRevival
             }
             settings.Save();
             PatchExe(root);
+            ApplyBankAddons(root);
             GameInstall.EnableMods(root, Manifest.Strs("modsEnabled"));
+        }
+
+        /// <summary>
+        /// Sound bank addons (BankAddon): a manifest file "X.bank.ezaddon" makes X.bank from the original bank, kept in
+        /// revival-backups. No addon in the manifest any more: the original is put back. A bank that is neither the
+        /// original nor the result (another game version) is left alone, logged.
+        /// </summary>
+        const string MasterBank = "Propnight/Content/FMOD/desktop/Master.bank";
+        void ApplyBankAddons(string root)
+        {
+            var addon = Manifest.Objs("files").FirstOrDefault(f => f.Str("path") == MasterBank + ".ezaddon" && Wanted(f));
+            var target = Local(root, MasterBank);
+            var backup = Path.Combine(root, "revival-backups", MasterBank.Replace('/', '\\'));
+            if (!File.Exists(target)) return;
+            try
+            {
+                if (addon == null)
+                {
+                    if (File.Exists(backup) && settings.CachedSha256(target) != settings.CachedSha256(backup))
+                    {
+                        File.Copy(backup, target, true);
+                        settings.CachedSha256(target);
+                        Log.Write("sound bank addon: none any more, the original Master.bank put back");
+                    }
+                    return;
+                }
+                var addonPath = Local(root, addon.Str("path"));
+                if (!File.Exists(addonPath)) return;
+                var bytes = File.ReadAllBytes(addonPath);
+                var h = BankAddon.Header(bytes, out _);
+                var current = settings.CachedSha256(target);
+                if (current == h.Str("out_sha256")) return;
+                string source;
+                if (current == h.Str("base_sha256")) { Backup(root, MasterBank); source = target; }
+                else if (File.Exists(backup) && settings.CachedSha256(backup) == h.Str("base_sha256")) source = backup;
+                else { Log.Write("sound bank addon: Master.bank is not the bank it was made for, left as it is"); return; }
+                report("Adding the EZ voices…", -1);
+                var result = BankAddon.Apply(File.ReadAllBytes(source), bytes);
+                var tmp = target + ".download";
+                File.WriteAllBytes(tmp, result);
+                File.Delete(target);
+                File.Move(tmp, target);
+                settings.CachedSha256(target);
+                settings.Save();
+                Log.Write("sound bank addon: Master.bank made from the original (" + result.Length + " bytes)");
+            }
+            catch (Exception e) { Log.Write("sound bank addon failed: " + e.Message); }
         }
 
         /// <summary>
@@ -275,8 +323,17 @@ namespace PropnightRevival
                 }
                 settings.HashCache.Remove(path);
             }
+            // the sound bank an addon changed (ApplyBankAddons): its original back, never deleted
+            var bank = Local(root, MasterBank);
+            var bankBackup = Path.Combine(backups, MasterBank.Replace('/', '\\'));
+            if (File.Exists(bankBackup))
+            {
+                File.Copy(bankBackup, bank, true);
+                settings.HashCache.Remove(bank);
+                Log.Write("restored " + MasterBank);
+            }
             var win64 = GameInstall.Win64(root);
-            foreach (var dir in new[] { @"Mods\PropnightLocalMap", @"Mods\PropnightLoginBypasser", @"Mods\" + GameInstall.AdminMod, "RevivalRelay" })
+            foreach (var dir in new[] { @"Mods\PropnightLocalMap", @"Mods\PropnightLoginBypasser", @"Mods\" + GameInstall.AdminMod, "RevivalRelay", "revival-avatars" })
             {
                 var full = Path.Combine(win64, dir);
                 if (Directory.Exists(full)) Directory.Delete(full, true);
@@ -312,7 +369,13 @@ namespace PropnightRevival
         // connection dies, 2026-10-14). A download that fails or stalls resumes where it stopped (HTTP Range). R2 stays the
         // source; the API's host mirrors the files (/files/, nginx cache) as a fallback, kept only while it is fast (the
         // user's rule: never a slow VPS download): once R2 failed and the mirror proved fast, the next files start on it.
+        // 2026-11-09 (bug 208): R2 answered nothing at all on a PC (requests cancelled at 0 bytes after 30 s; its host has
+        // IPv6 addresses, the mirror's has none) and every small file waited 30 s on R2 before the mirror, the button still
+        // saying "Verifying" the file before: R2 now has 10 s to answer, and once it failed the small files (whose few
+        // seconds never prove the mirror fast) go straight to the mirror.
         static bool r2Failed, mirrorFast;
+        static readonly TimeSpan R2AnswerTimeout = TimeSpan.FromSeconds(10);
+        const long SmallFile = 16_000_000;
         const double MirrorMinBytesPerSecond = 10e6 / 8;   // 10 Mbit/s, measured over its first MirrorProbe
         static readonly TimeSpan MirrorProbe = TimeSpan.FromSeconds(8);
         const int Attempts = 10;   // in a row without any progress (a try that got further starts the count again)
@@ -344,7 +407,7 @@ namespace PropnightRevival
                 else dst.SetLength(0);
                 long resumed = done, lastFailAt = -1;
                 int failures = 0;
-                var useMirror = r2Failed && mirrorFast;
+                var useMirror = r2Failed && (mirrorFast || size <= SmallFile);
                 for (int attempt = 1; done < size; attempt++)
                 {
                     var url = useMirror ? mirror : r2;
@@ -353,7 +416,11 @@ namespace PropnightRevival
                         using (var req = new HttpRequestMessage(HttpMethod.Get, url))
                         {
                             if (done > 0) req.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(done, null);
-                            using (var resp = await Api.Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead))
+                            report($"{(before + done) / 1e6:0} / {total / 1e6:0} MB · {label}", (double)(before + done) / total);
+                            HttpResponseMessage answered;
+                            using (var wait = new System.Threading.CancellationTokenSource(url == r2 ? R2AnswerTimeout : Api.Http.Timeout))
+                                answered = await Api.Http.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, wait.Token);
+                            using (var resp = answered)
                             {
                                 resp.EnsureSuccessStatusCode();
                                 if (done > 0 && resp.StatusCode != System.Net.HttpStatusCode.PartialContent)

@@ -14,7 +14,19 @@ namespace PropnightRevival
         // a banned account (403 with "banned": {until, reason}): the end of the ban (UTC) and why
         public DateTime? BannedUntil;
         public string BanReason;
+        // the answer came from the revival server (JSON): an HTML page (Cloudflare, nginx while the server restarts)
+        // never ends a session
+        public bool FromServer;
+        public bool Unavailable => Status >= 500 || !FromServer;
+        public const string UnavailableText = "The server is restarting or under maintenance. Please try again in a minute.";
         public ApiException(int status, string message) : base(message) { Status = status; }
+        public static ApiException Of(int status, Dictionary<string, object> json)
+        {
+            var text = json.Str("error");
+            return new ApiException(status, text ?? (status >= 500 || json == null ? UnavailableText : $"server error {status}")) { FromServer = json != null };
+        }
+        /// <summary>A 401 / 403 of the server itself: the session is over (or the account banned).</summary>
+        public bool SessionRefused => FromServer && (Status == 401 || Status == 403);
     }
 
     /// <summary>Revival server API (see revival/server/src/accounts.mjs).</summary>
@@ -70,7 +82,7 @@ namespace PropnightRevival
                     try { json = string.IsNullOrEmpty(text) ? null : Json.Parse(text); } catch { }
                     if (!resp.IsSuccessStatusCode)
                     {
-                        var error = new ApiException((int)resp.StatusCode, json.Str("error") ?? $"server error {(int)resp.StatusCode}");
+                        var error = ApiException.Of((int)resp.StatusCode, json);
                         var ban = resp.StatusCode == HttpStatusCode.Forbidden && json != null ? json.Obj("banned") : null;
                         if (ban != null && DateTime.TryParse(ban.Str("until"), System.Globalization.CultureInfo.InvariantCulture,
                             System.Globalization.DateTimeStyles.AdjustToUniversal | System.Globalization.DateTimeStyles.AssumeUniversal, out var until))
@@ -182,7 +194,7 @@ namespace PropnightRevival
                     Dictionary<string, object> json = null;
                     try { json = string.IsNullOrEmpty(text) ? null : Json.Parse(text); } catch { }
                     if (resp.IsSuccessStatusCode) return json.Str("id");
-                    throw new ApiException((int)resp.StatusCode, json.Str("error") ?? $"server error {(int)resp.StatusCode}");
+                    throw ApiException.Of((int)resp.StatusCode, json);
                 }
             }
         }
@@ -203,11 +215,35 @@ namespace PropnightRevival
                     Dictionary<string, object> json = null;
                     try { json = string.IsNullOrEmpty(text) ? null : Json.Parse(text); } catch { }
                     if (resp.IsSuccessStatusCode && json != null) return json;
-                    throw new ApiException((int)resp.StatusCode, json.Str("error") ?? $"server error {(int)resp.StatusCode}");
+                    throw ApiException.Of((int)resp.StatusCode, json);
+                }
+            }
+        }
+        /// <summary>The player's own avatar / banner, raw (1.59.0): x, y (0..1) the part kept when it is cropped. {ok, pending}</summary>
+        public async Task<Dictionary<string, object>> UploadProfileImage(byte[] data, string type, string kind, double x, double y)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            var url = Config.Api + "/revival/social/image?kind=" + kind + "&x=" + x.ToString("0.###", inv) + "&y=" + y.ToString("0.###", inv);
+            using (var req = new HttpRequestMessage(HttpMethod.Post, url))
+            {
+                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", Token);
+                req.Headers.UserAgent.ParseAdd("PropnightRevivalLauncher/" + Config.Version);
+                req.Content = new ByteArrayContent(data);
+                req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(type ?? "image/png");
+                using (var resp = await UploadHttp.SendAsync(req).ConfigureAwait(false))
+                {
+                    var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+                    Dictionary<string, object> json = null;
+                    try { json = string.IsNullOrEmpty(text) ? null : Json.Parse(text); } catch { }
+                    if (resp.IsSuccessStatusCode && json != null) return json;
+                    throw ApiException.Of((int)resp.StatusCode, json);
                 }
             }
         }
         public Task<Dictionary<string, object>> Friends() => Send(HttpMethod.Get, "/revival/friends");
+        /// <summary>The players' avatars by name (the game's lobby list): {players: {name: url | null}}; names [\w-], 40 at most.</summary>
+        public Task<Dictionary<string, object>> Avatars(IEnumerable<string> names) =>
+            Send(HttpMethod.Get, "/revival/social/avatars?u=" + Uri.EscapeDataString(string.Join(",", names.Take(40))));
         /// <summary>Public games (server browser): map, players, phase, roles and ranks.</summary>
         public Task<Dictionary<string, object>> Servers() => Send(HttpMethod.Get, "/revival/servers");
         /// <summary>Whether the game on this relay port still takes newcomers: {ok, reason: started | gone, message}.</summary>
@@ -270,8 +306,8 @@ namespace PropnightRevival
             Send(HttpMethod.Post, "/revival/tamper", new Dictionary<string, object> { ["files"] = files, ["stage"] = stage });
 
         public Task<Dictionary<string, object>> Presence(bool game, bool launched, string role, string server, string build, string channel,
-            List<string> classicPacks, Dictionary<string, int> pings) =>
-            Send(HttpMethod.Post, "/revival/presence", new Dictionary<string, object> { ["game"] = game, ["launched"] = launched, ["role"] = role,
+            List<string> classicPacks, Dictionary<string, int> pings, bool away = false) =>
+            Send(HttpMethod.Post, "/revival/presence", new Dictionary<string, object> { ["game"] = game, ["launched"] = launched, ["role"] = role, ["away"] = away,
                 ["server"] = server, ["build"] = build,
                 // classicMaps: any classic map pack (servers before the split, 2026-10-30); classicPacks: which ones
                 ["channel"] = channel, ["classicMaps"] = classicPacks.Count > 0, ["classicPacks"] = classicPacks, ["pings"] = pings,

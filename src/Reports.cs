@@ -36,7 +36,9 @@ namespace PropnightRevival
 
         public static Reports Matches(Api api, string gameRoot) =>
             new Reports(Path.Combine(GameInstall.Win64(gameRoot), "revival-matches.jsonl"), api.PostMatch,
-                m => $"match sent: {m.Str("map")}, MMR {m.Str("mmrBefore")} -> {m.Str("mmrAfter")}");
+                // (the host's replay also goes as parts, a line a minute of the match: replay.lua writePart)
+                m => m.ContainsKey("replayChunk") ? $"replay part sent: {m.Str("map")} #{m.Str("seq")}{(m.Bool("last") ? " (last)" : "")}"
+                    : $"match sent: {m.Str("map")}, MMR {m.Str("mmrBefore")} -> {m.Str("mmrAfter")}");
 
         public void Start() => timer = new Timer(_ => { var _ignored = Flush(); }, null, 5000, 5000);
 

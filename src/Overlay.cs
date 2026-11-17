@@ -26,7 +26,7 @@ namespace PropnightRevival
     /// Cost: one foreground window check every 400 ms while the launcher runs; the hotkey is registered only while the game
     /// (or this overlay) is in front, so Shift + Tab stays free for the other programs.
     /// </summary>
-    class Overlay : IDisposable
+    partial class Overlay : IDisposable
     {
         readonly Func<Dictionary<string, object>> state;
         readonly Func<Dictionary<string, object>, Task> action;
@@ -51,6 +51,7 @@ namespace PropnightRevival
             hotkey = new HotkeyWindow(() => Toggle());
             toaster = new Toaster(a => { var _ = action(a); });
             corner = new CornerTimer();
+            if (CastReady) try { cast = new CastServer(win64); } catch (Exception e) { Log.Write("cast: " + e.Message); }
             watch.Tick += (s, e) => Watch();
             refresh.Tick += (s, e) => Push(false);
         }
@@ -111,6 +112,7 @@ namespace PropnightRevival
             toaster.Showing = gameInFront && !IsOpen && area.HasValue;
             if (area.HasValue) toaster.Place(area.Value, ToastsRight);
             corner.Update((TimerOn || FpsOn) && gameInFront && !IsOpen && area.HasValue ? area : null, CornerText());
+            CastWatch(gameInFront, area);
         }
 
         [DllImport("user32.dll")] static extern IntPtr GetCapture();
@@ -131,6 +133,7 @@ namespace PropnightRevival
             if (IsOpen) Close(false);
             toaster.Clear();
             corner.Update(null, null);
+            CastGone();
             if (form != null)
             {
                 var old = form;
@@ -252,6 +255,13 @@ namespace PropnightRevival
         }
 
         /// <summary>The page's state again (each second while open, after an action, or when the launcher learns something).</summary>
+        /// <summary>The notifications' accent: the launcher's theme (Settings › Launcher › Theme).</summary>
+        public static Color ThemeAccent = Color.FromArgb(0xEF, 0x45, 0x50);
+        public static void SetTheme(string theme) =>
+            ThemeAccent = theme == "blue" ? Color.FromArgb(0x3B, 0x82, 0xF6) : theme == "violet" ? Color.FromArgb(0x8B, 0x5C, 0xF6)
+                : theme == "orange" ? Color.FromArgb(0xF9, 0x73, 0x16) : theme == "green" ? Color.FromArgb(0x22, 0xC5, 0x5E)
+                : theme == "light" ? Color.FromArgb(0xD9, 0x2D, 0x3A) : Color.FromArgb(0xEF, 0x45, 0x50);
+
         public void Push(bool full)
         {
             if (!IsOpen) return;
@@ -301,7 +311,7 @@ namespace PropnightRevival
 
         public void Dispose()
         {
-            watch.Dispose(); refresh.Dispose(); hotkey.Dispose(); toaster.Dispose(); corner.Dispose();
+            watch.Dispose(); refresh.Dispose(); hotkey.Dispose(); toaster.Dispose(); corner.Dispose(); castTimer.Dispose(); CastGone(); cast?.Dispose();
             try { File.Delete(Path.Combine(win64(), "revival-overlay-open.txt")); } catch (Exception) { }
             form?.Dispose();
         }
@@ -652,7 +662,8 @@ namespace PropnightRevival
                 return p;
             }
             protected static readonly Color Ink = Color.FromArgb(0xF4, 0xF2, 0xEF), Muted = Color.FromArgb(0xC3, 0xC1, 0xCF), Faint = Color.FromArgb(0x9C, 0x9D, 0xB0),
-                Accent = Color.FromArgb(0xEF, 0x45, 0x50), Good = Color.FromArgb(0x4A, 0xDE, 0x80);
+                Good = Color.FromArgb(0x4A, 0xDE, 0x80);
+            protected static Color Accent => ThemeAccent;
         }
 
         // ---- the notifications: one at a time, 3 s apart, sliding in and fading out

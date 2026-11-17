@@ -18,6 +18,14 @@ namespace PropnightRevival
     /// </summary>
     class ShellForm : Form
     {
+        // the message sound (ui/sounds/message.wav, Sounds.cs) for invites and friend requests: once each, not for those already
+        // there at sign-in (invitesPrimed); the pre-lobby invites (from|at) and friend requests (name) seen
+        bool invitesPrimed, freshInvite;
+        readonly HashSet<string> seenLobbyInvites = new HashSet<string>(), seenRequests = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        DateTime lastChime;
+        // the taskbar badge: the server's unread count, plus the messages that came in an open chat while the launcher was
+        // not in front (they are read at once there: none in the server's count); back in front, those go
+        int serverUnread, unseenInChat;
         readonly Settings settings = Settings.Load();
         readonly Api api = new Api();
         readonly WebView2 web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(7, 7, 12) };
@@ -30,8 +38,14 @@ namespace PropnightRevival
         // SERVERS tab: the public games, fetched every 5 s while the tab is shown
         readonly Timer serversTimer = new Timer { Interval = 5_000 };
         string lastHostOrder, lastQpOffer, lastResumeOrder;
+        // Create a game's pre-lobby (1.61.0): the host order handled, the lobby whose game was started, the leader's game joined
+        string lastLobbyOrder, lastLobbyStart, lobbyFollow; DateTime lobbyFollowAt; int lobbyFollowTries;
         DateTime lastPresence = DateTime.MinValue;
         string lastPresenceKey, lastFriendsKey;
+        // away (1.59.1): the page says when nobody touched the launcher for 15 minutes; the presence the page shows on the
+        // player's own avatar (online, away, game), sent when it changes
+        bool uiAway;
+        string lastOwnPresence;
         FormWindowState lastWindowState = FormWindowState.Normal;
         int? pendingJoinPort;
         string pendingHostCommand;   // Servers › Create a game with the game closed: "hostpublic MAP ROLE" written at its launch
@@ -46,6 +60,8 @@ namespace PropnightRevival
         string activityKey;                          // what the Discord activity shows: its timer restarts when it changes
         DateTime activitySince = DateTime.UtcNow;
         bool activityShown;
+        Dictionary<string, object> discordCard;      // the player as the page knows it: name, avatar, level, rank, public page, presence
+        Dictionary<string, object> discordGroup;     // the player's open group (Groups), else null
         readonly Dictionary<int, string> buildsByPort = new Dictionary<int, string>();   // game port -> host's build
         string outdatedShown;          // newest build already announced in the running game
         bool refreshingFriends, pushingPresence;
@@ -89,6 +105,8 @@ namespace PropnightRevival
         // there, and PLAY too (the end of the game brings it back); otherwise it minimizes to the taskbar and stays open in game
         readonly NotifyIcon tray = new NotifyIcon { Text = "Propnight Revival" };
         bool trayTipShown;
+        // the players' avatars in the game's lobby list (LobbyAvatars.cs: the mod asks, the launcher saves the pictures)
+        readonly LobbyAvatars lobbyAvatars;
 
         public ShellForm()
         {
@@ -99,6 +117,7 @@ namespace PropnightRevival
             BackColor = Color.FromArgb(7, 7, 12);
             Controls.Add(web);
             api.Banned += OnBanned;
+            lobbyAvatars = new LobbyAvatars(api, () => signedIn && GameInstall.IsGameRoot(settings.GameRoot) ? GameInstall.Win64(settings.GameRoot) : null);
             serverTimer.Tick += async (s, e) => await RefreshServer();
             updateTimer.Tick += async (s, e) =>
             {
@@ -106,11 +125,13 @@ namespace PropnightRevival
                 if (signedIn && !busy && !playing) await CheckUpdates(quiet: true);
                 else if (signedIn && playing) await CheckWhilePlaying();
             };
-            friendsTimer.Tick += async (s, e) => { var _ = MeasurePings(); await PushPresence(); await ModSocialActions(); UpdateDiscord(); };
+            friendsTimer.Tick += async (s, e) => { var _ = MeasurePings(); await PushPresence(); await ModSocialActions(); lobbyAvatars.Tick(); UpdateDiscord(); };
             WatchNetwork();
             overlay = new Overlay(OverlayState, OverlayAction, OverlayWin64, text => { Log.Write("overlay: " + text); Toast("warn", "In-game overlay", text, 9000); })
-                { TimerOn = settings.OverlayTimer, ToastsRight = settings.OverlayRight, FpsOn = settings.OverlayFps };
+                { TimerOn = settings.OverlayTimer, ToastsRight = settings.OverlayRight, FpsOn = settings.OverlayFps, CastOn = settings.OverlayCast };
+            Overlay.SetTheme(settings.Theme);
             if (OverlayOn) overlay.Start();
+            if (Overlay.CastReady) overlay.StartCast();   // the cast HUD: on its own, the overlay off or not
             overlay.GameStarted = () =>
             {
                 if (settings.OverlayFps) OverlayGameCommand("fps", "1", 0);
@@ -143,7 +164,7 @@ namespace PropnightRevival
                 Still();
             };
             VisibleChanged += (s, e) => Still();
-            Activated += (s, e) => { active = true; Still(); };
+            Activated += (s, e) => { active = true; Still(); if (unseenInChat > 0) { unseenInChat = 0; Taskbar.SetCount(Handle, serverUnread); } };
             Deactivate += (s, e) => { active = false; Still(); };
         }
 
@@ -176,15 +197,23 @@ namespace PropnightRevival
         [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
         [DllImport("user32.dll")] static extern bool ReleaseCapture();
         [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
+        [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, IntPtr processId);
+        [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+        [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extraInfo);
+        [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
             try { int round = 2; DwmSetWindowAttribute(Handle, 33, ref round, 4); } catch { }   // DWMWA_WINDOW_CORNER_PREFERENCE (Windows 11)
             try { int dark = 1; DwmSetWindowAttribute(Handle, 20, ref dark, 4); } catch { }    // dark mode frame
-            // 1180x720 layout pixels at the monitor's scaling (WebView2 zooms the page the same way)
+            // 1280x800 layout pixels (Steam's window, launcher 1.57; 1180x720 before) at the monitor's scaling (WebView2 zooms the
+            // page the same way, and only for the monitor: a bigger window gives the page more room, never bigger elements)
             var scale = DeviceDpi / 96f;
-            var size = new Size((int)(1180 * scale), (int)(720 * scale));
-            MinimumSize = new Size((int)(960 * scale), (int)(600 * scale));
+            var size = new Size((int)(1280 * scale), (int)(800 * scale));
+            MinimumSize = new Size((int)(1024 * scale), (int)(640 * scale));
             MaximizedBounds = Screen.FromHandle(Handle).WorkingArea;   // maximize without covering the taskbar
             var area = Screen.FromPoint(Cursor.Position).WorkingArea;
             Bounds = new Rectangle(area.Left + Math.Max(0, (area.Width - size.Width) / 2), area.Top + Math.Max(0, (area.Height - size.Height) / 2),
@@ -267,6 +296,23 @@ namespace PropnightRevival
             if (!signedIn || !File.Exists(LinkFile)) return;
             string link;
             try { link = File.ReadAllText(LinkFile).Trim(); File.Delete(LinkFile); } catch (IOException) { return; }
+            await HandleLinkText(link);
+        }
+
+        /// <summary>A propnightrevival:// link: from the browser (HandleLink) or a card of a conversation (the page's "appLink").</summary>
+        async Task HandleLinkText(string link)
+        {
+            // a profile (the site's /u/<name> page, "Open in the launcher")
+            var pl = System.Text.RegularExpressions.Regex.Match(link, @"^propnightrevival://profile/([\w-]{1,32})/?$");
+            if (pl.Success) { State(new Dictionary<string, object> { ["type"] = "profileLink", ["name"] = pl.Groups[1].Value }); return; }
+            // a seat of a group (the groups' Discord buttons -> site /group/<id> -> here): the page takes it (Groups)
+            var g = System.Text.RegularExpressions.Regex.Match(link, @"^propnightrevival://group/([0-9a-f]{12})/?(?:\?role=(survivor|killer))?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            if (g.Success)
+            {
+                Log.Write("group link: " + g.Groups[1].Value);
+                State(new Dictionary<string, object> { ["type"] = "groupLink", ["id"] = g.Groups[1].Value.ToLowerInvariant(), ["role"] = g.Groups[2].Success ? g.Groups[2].Value.ToLowerInvariant() : "" });
+                return;
+            }
             var m = System.Text.RegularExpressions.Regex.Match(link, @"^propnightrevival://join/([0-9a-f-]{36})/?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
             if (!m.Success) { Log.Write("link ignored: " + link); return; }
             var id = m.Groups[1].Value.ToLowerInvariant();
@@ -305,6 +351,33 @@ namespace PropnightRevival
             Activate();
         }
 
+        /// <summary>In front of the game that asked (its TAB's profile and report buttons). Windows refuses the foreground to a
+        /// process that is not in front: the call is made with the front window's input attached, an Alt press as a last
+        /// resort. A game in exclusive full screen minimizes, as with Alt+Tab; its window settings are not touched.</summary>
+        void ShowOverGame()
+        {
+            ShowFromTray();
+            var front = GetForegroundWindow();
+            if (front == Handle) return;
+            uint mine = GetCurrentThreadId(), theirs = front == IntPtr.Zero ? 0 : GetWindowThreadProcessId(front, IntPtr.Zero);
+            var attached = theirs != 0 && theirs != mine && AttachThreadInput(mine, theirs, true);
+            try
+            {
+                BringWindowToTop(Handle);
+                SetForegroundWindow(Handle);
+            }
+            finally { if (attached) AttachThreadInput(mine, theirs, false); }
+            if (GetForegroundWindow() != Handle)
+            {
+                keybd_event(0x12, 0, 0, UIntPtr.Zero);   // VK_MENU down, up: the foreground lock lets the next call through
+                keybd_event(0x12, 0, 2, UIntPtr.Zero);
+                SetForegroundWindow(Handle);
+            }
+            BringToFront();
+            Activate();
+            Log.Write("launcher over the game: " + (GetForegroundWindow() == Handle ? "in front" : "refused by Windows"));
+        }
+
         /// <summary>The page, with the chosen language's dictionary in it (ui/i18n/&lt;lang&gt;.json, embedded): translated from its
         /// first paint. English: no dictionary.</summary>
         string ReadUi()
@@ -319,11 +392,16 @@ namespace PropnightRevival
         }
 
         // ---- the launcher's languages (Settings > Game > Language): Windows' own when it is one of them, else English
-        static readonly string[] Languages = { "en", "fr", "ru", "es", "de" };
+        static readonly string[] Languages = { "en", "fr", "ru", "es", "de", "it", "pt-BR", "pl", "tr", "sv", "ko", "ja", "zh-CN", "zh-TW" };
+        static readonly string[] SiteLanguages = { "fr", "ru", "es", "de" };   // the site's own (site/i18n): English for the others
         string UiLanguage()
         {
             if (settings.Language != null && Array.IndexOf(Languages, settings.Language) >= 0) return settings.Language;
-            var windows = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName;
+            var culture = System.Globalization.CultureInfo.CurrentUICulture;
+            var windows = culture.TwoLetterISOLanguageName;
+            // Chinese: Traditional for Taiwan, Hong Kong, Macau (zh-Hant), else Simplified; any Portuguese: Brazil's
+            if (windows == "zh") return culture.Name.Contains("Hant") || culture.Name.EndsWith("TW") || culture.Name.EndsWith("HK") || culture.Name.EndsWith("MO") ? "zh-TW" : "zh-CN";
+            if (windows == "pt") return "pt-BR";
             return Array.IndexOf(Languages, windows) >= 0 ? windows : "en";
         }
         static string ReadDictionary(string lang)
@@ -374,10 +452,76 @@ namespace PropnightRevival
                         if (number.Length > 0 && number.Length < 12 && number.All(char.IsDigit)) { Clipboard.SetText("#" + number); Toast("good", $"#{number} copied", "Paste it to the support team on Discord."); }
                         break;
                     case "openDiscord": Process.Start(new ProcessStartInfo(DiscordInvite) { UseShellExecute = true }); break;
+                    // a profile's page on the site (/u/<name>, the player turned it on): copied; Share also opens Discord to paste it
+                    case "appLink":
+                        var appLink = m.Str("link") ?? "";
+                        if (signedIn && appLink.StartsWith(LinkScheme + "://", StringComparison.OrdinalIgnoreCase) && appLink.Length < 120) await HandleLinkText(appLink);
+                        break;
+                    // a friend's message (Settings › Launcher › Message sound): played here, the page may not play sound before a click
+                    // the friends' unread messages: their count on the taskbar button
+                    case "unreadBadge":
+                        int.TryParse(m.Str("n"), out serverUnread);
+                        Taskbar.SetCount(Handle, serverUnread + unseenInChat);
+                        break;
+                    case "msgSound":
+                        // in the open chat: only when the launcher is not in front (behind the game, minimized)
+                        var inChat = string.Equals(m.Str("open"), "true", StringComparison.OrdinalIgnoreCase);
+                        if (!settings.MessageSound || (inChat && active && WindowState != FormWindowState.Minimized)) break;
+                        if (inChat) Taskbar.SetCount(Handle, serverUnread + ++unseenInChat);
+                        PlaySound("message");
+                        break;
+                    case "voteSound":
+                        if (settings.VoteSound) PlaySound("vote");
+                        break;
+                    // Settings › Launcher › Sounds › Volume (0-100 %): the message sound as a test once the slider is let go
+                    case "soundVolume":
+                        if (!int.TryParse(m.Str("v"), out var vol)) break;
+                        settings.SoundVolume = Math.Max(0, Math.Min(100, vol));
+                        settings.Save();
+                        State(new Dictionary<string, object> { ["soundVolume"] = settings.SoundVolume });
+                        if (m.Bool("test")) PlaySound("message", true);
+                        break;
+                    // the vote started: a Windows notification when the launcher is not in front
+                    case "voteNotify":
+                        if (!settings.VoteNotify || (active && WindowState != FormWindowState.Minimized && Visible)) break;
+                        var lead = (m.Str("leader") ?? "").Trim();
+                        tray.ShowBalloonTip(10_000, "Vote for the map", (lead.Length > 0 ? lead + " picked the maps." : "Your group's vote started.") + " Open the launcher to vote.", ToolTipIcon.Info);
+                        break;
+                    case "voteNotifySetting":
+                        settings.VoteNotify = m.Bool("on");
+                        settings.Save();
+                        State(new Dictionary<string, object> { ["voteNotify"] = settings.VoteNotify });
+                        break;
+                    case "theme":   // Settings › Launcher › Theme
+                        settings.Theme = Settings.Themes.Contains(m.Str("v")) ? m.Str("v") : "red";
+                        settings.Save();
+                        Overlay.SetTheme(settings.Theme);
+                        overlay?.Push(false);   // the overlay in the same colours
+                        break;
+                    case "recentEmojis":   // the chat's emoji picker (sent at most every few seconds)
+                        var emo = m.Str("list") ?? "";
+                        if (emo.Length > 400) emo = emo.Substring(0, 400);
+                        if (emo == (settings.RecentEmojis ?? "")) break;
+                        settings.RecentEmojis = emo;
+                        settings.Save();
+                        break;
+                    case "voteSoundSetting":
+                        settings.VoteSound = m.Bool("on");
+                        settings.Save();
+                        State(new Dictionary<string, object> { ["voteSound"] = settings.VoteSound });
+                        break;
+                    case "copyProfileLink":
+                    case "shareProfile":
+                        var who = m.Str("name") ?? "";
+                        if (!System.Text.RegularExpressions.Regex.IsMatch(who, @"^[\w-]{1,32}$")) break;
+                        Clipboard.SetText(SiteUrl + "/u/" + who);
+                        Toast("good", "Profile link copied", "propnightrevival.online/u/" + who);
+                        if (m.Str("cmd") == "shareProfile") try { Process.Start(new ProcessStartInfo("discord://-/channels/@me") { UseShellExecute = true }); } catch (Exception) { }
+                        break;
                     // Settings › Help › What the revival installs: the site's list of every file (its #files section), in the launcher's language
                     case "openFilesList":
                         var siteLang = UiLanguage();
-                        Process.Start(new ProcessStartInfo("https://propnightrevival.online/" + (siteLang == "en" ? "" : siteLang + "/") + "#files") { UseShellExecute = true });
+                        Process.Start(new ProcessStartInfo("https://propnightrevival.online/" + (Array.IndexOf(SiteLanguages, siteLang) < 0 ? "" : siteLang + "/") + "#files") { UseShellExecute = true });
                         break;
                     case "updateLauncher": await UpdateLauncher(); break;
                     case "play": await Play(); break;
@@ -393,6 +537,7 @@ namespace PropnightRevival
                     case "dlcAll": await QueueDlc(updater?.Manifest?.Objs("dlc").Select(p => p.Str("id")).Where(id => !settings.DlcOn(id)).ToList()); break;
                     case "dlcUnqueue": dlcQueue.Remove(m.Str("id")); SendDlcQueue(); break;
                     case "dlcStop": dlcQueue.Clear(); SendDlcQueue(); break;
+                    case "dlcSeen": DlcSeen(m.Strs("ids")); break;
                     case "uninstall": await UninstallRevival(); break;
                     case "verify": await VerifyFiles(); break;
                     case "deleteAccount": await AccountDeletion(true); break;
@@ -402,12 +547,42 @@ namespace PropnightRevival
                         settings.Save();
                         await ApplyTestChannel(null, true);
                         break;
+                    case "testPick":
+                        if (m.Str("channel") != "beta" && m.Str("channel") != "diag") break;
+                        settings.TestPick = m.Str("channel");
+                        settings.TestVersion = true;
+                        settings.Save();
+                        await ApplyTestChannel(null, true);
+                        break;
                     case "discordActivity":
                         settings.DiscordActivity = m.Bool("on");
                         settings.Save();
                         State(new Dictionary<string, object> { ["discordActivity"] = settings.DiscordActivity });
                         UpdateDiscord();
                         break;
+                    // Settings › Game › Message sound (the page may not use localStorage: kept here)
+                    case "messageSound":
+                        settings.MessageSound = m.Bool("on");
+                        settings.Save();
+                        State(new Dictionary<string, object> { ["messageSound"] = settings.MessageSound });
+                        break;
+                    case "castHud":
+                        settings.OverlayCast = overlay.CastOn = m.Bool("on");
+                        settings.Save();
+                        State(new Dictionary<string, object> { ["castHud"] = settings.OverlayCast });
+                        break;
+                    case "castLink":
+                        if (overlay.CastUrl != null) try { Clipboard.SetText(overlay.CastUrl); State(new Dictionary<string, object> { ["castCopied"] = true }); } catch (Exception e) { Log.Write("cast link: " + e.Message); }
+                        break;
+                    case "discordShowLevel":
+                        settings.DiscordShowLevel = m.Bool("on");
+                        settings.Save();
+                        State(new Dictionary<string, object> { ["discordShowLevel"] = settings.DiscordShowLevel });
+                        UpdateDiscord();
+                        break;
+                    // the page's own profile and open group, for the Discord activity (no request of its own)
+                    case "discordCard": discordCard = m.Obj("card"); UpdateDiscord(); break;
+                    case "discordGroup": discordGroup = m.Obj("group"); UpdateDiscord(); break;
                     case "dx11": SetDx11(m.Bool("on")); break;
                     case "setLanguage": SetLanguage(m.Str("lang")); break;
                     case "minimizeOnPlay":
@@ -455,6 +630,8 @@ namespace PropnightRevival
                     case "clearMsgClip": RemoveClip(msgClips, m, "msgClips"); break;
                     case "community": await CommunityCall(m); break;
                     case "communityImage": await CommunityImage(m); break;
+                    case "profileImage": await ProfileImage(m); break;
+                    case "activity": uiAway = m.Bool("away"); await PushPresence(); break;
                 }
             }
             catch (Exception e)
@@ -613,20 +790,34 @@ namespace PropnightRevival
             if (!GameInstall.IsGameRoot(settings.GameRoot)) { settings.GameRoot = GameInstall.Detect(); settings.Save(); }
             api.Token = settings.Token;
             if (api.Token == null) { ShowAuth(""); await server; return; }
-            try
+            // no internet, or the server restarting: the session is kept and the sign-in tried again (2026-11-14: the
+            // sign-in page came up as if signed out)
+            for (var attempt = 1; ; attempt++)
             {
-                var me = await api.Me();
-                Remember(me);
-                ClearBan();
-                await ApplyTestChannel(me, false);   // before EnterHome's update check, which reads it
-                await EnterHome();
+                try
+                {
+                    var me = await api.Me();
+                    Remember(me);
+                    ClearBan();
+                    await ApplyTestChannel(me, false);   // before EnterHome's update check, which reads it
+                    await EnterHome();
+                }
+                catch (ApiException e) when (e.SessionRefused)
+                {
+                    settings.Token = null; settings.Save(); api.Token = null;
+                    ShowAuth(e.Status == 403 ? AuthMessage(e) : "Your session expired, please sign in again.");
+                }
+                catch (Exception e) when (Offline(e))
+                {
+                    Log.Write($"sign-in, attempt {attempt}: {e.Message}");
+                    State(new Dictionary<string, object> { ["splash"] = maintenance ?? (e is ApiException
+                        ? "The server is restarting or under maintenance. Trying again…" : "Cannot reach the server. Check your internet connection. Trying again…") });
+                    await Task.Delay(attempt < 6 ? 5000 : 15000);
+                    continue;
+                }
+                catch (Exception e) { ShowAuth("Server unreachable: " + e.Message); }
+                break;
             }
-            catch (ApiException e) when (e.Status == 401 || e.Status == 403)
-            {
-                settings.Token = null; settings.Save(); api.Token = null;
-                ShowAuth(e.Status == 403 ? AuthMessage(e) : "Your session expired, please sign in again.");
-            }
-            catch (Exception e) { ShowAuth("Server unreachable: " + e.Message); }
             await server;
         }
 
@@ -644,6 +835,10 @@ namespace PropnightRevival
                     .ToList();
             settings.Save();
         }
+
+        /// <summary>No internet, or the server down or restarting (not an answer of the server itself).</summary>
+        static bool Offline(Exception e) =>
+            e is System.Net.Http.HttpRequestException || e is TaskCanceledException || e is System.Net.WebException || (e is ApiException a && a.Unavailable);
 
         void ShowAuth(string error)
         {
@@ -864,7 +1059,7 @@ namespace PropnightRevival
             signedIn = true;
             RegisterLinkScheme();
             SendChannelState();
-            State(new Dictionary<string, object> { ["beta"] = Config.IsBetaCode(settings.BetaCode), ["channel"] = ChannelName(), ["discordActivity"] = settings.DiscordActivity, ["dx11"] = settings.DirectX11, ["minimizeOnPlay"] = settings.MinimizeOnPlay, ["language"] = settings.Language ?? "auto" });
+            State(new Dictionary<string, object> { ["beta"] = Config.IsBetaCode(settings.BetaCode), ["channel"] = ChannelName(), ["discordActivity"] = settings.DiscordActivity, ["discordShowLevel"] = settings.DiscordShowLevel, ["castReady"] = Overlay.CastReady, ["castHud"] = settings.OverlayCast, ["castUrl"] = overlay?.CastUrl ?? "", ["messageSound"] = settings.MessageSound, ["voteSound"] = settings.VoteSound, ["voteNotify"] = settings.VoteNotify, ["soundVolume"] = settings.SoundVolume, ["recentEmojis"] = settings.RecentEmojis ?? "", ["theme"] = settings.Theme ?? "red", ["dx11"] = settings.DirectX11, ["minimizeOnPlay"] = settings.MinimizeOnPlay, ["language"] = settings.Language ?? "auto" });
             State(new Dictionary<string, object> { ["view"] = "home", ["username"] = settings.Username, ["steamId"] = settings.SteamId, ["gameRoot"] = settings.GameRoot ?? "",
                 ["discord"] = discordName ?? "" });
             SendCachedNotes();
@@ -1005,7 +1200,8 @@ namespace PropnightRevival
             catch (Exception e) { Log.Write("host warning: " + e.Message); return false; }
         }
 
-        // anti-cheat: a memory editor opened during a game started by PLAY, checked every 10 s, each one reported once a game
+        // anti-cheat: a Lua mod added during a game started by PLAY, checked every 10 s, each one reported once a game
+        // (2026-11-13: the memory editor search, process names and window titles, withdrawn: Defender's guess)
         readonly HashSet<string> toolsReported = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         DateTime toolsCheckedAt;
         List<string> modsAllowedNow;   // public release: the mods that may load (a Lua mod added during the game is reported)
@@ -1014,18 +1210,11 @@ namespace PropnightRevival
             if (DateTime.UtcNow - toolsCheckedAt < TimeSpan.FromSeconds(10)) return;
             toolsCheckedAt = DateTime.UtcNow;
             var allowed = modsAllowedNow;
-            var fresh = (await Task.Run(() => CheatTools.Open().Concat(GameInstall.ForeignMods(settings.GameRoot, allowed).Select(m => "Lua mod " + m)).ToList()))
+            var fresh = (await Task.Run(() => GameInstall.ForeignMods(settings.GameRoot, allowed).Select(m => "Lua mod " + m).ToList()))
                 .Where(t => toolsReported.Add(t)).ToList();
             if (fresh.Count == 0) return;
-            Log.Write("cheat tool opened during the game: " + string.Join(", ", fresh));
+            Log.Write("Lua mod added during the game: " + string.Join(", ", fresh));
             await ReportTool(fresh, "game");
-            // a memory editor (not a Lua mod added during the game: UE4SS loads the mods at the start only): the game is
-            // closed, as PLAY would not have started it
-            var editors = fresh.Where(t => !t.StartsWith("Lua mod ")).ToList();
-            if (editors.Count == 0) return;
-            var closed = await Task.Run(() => GameInstall.CloseGame());
-            Log.Write($"game closed ({closed} process(es)): {string.Join(", ", editors)} open during the game");
-            Toast("error", "Propnight was closed", $"{string.Join(", ", editors)} is open. Close it to play.", 9000);
         }
 
         async Task ReportTool(List<string> tools, string stage)
@@ -1077,10 +1266,13 @@ namespace PropnightRevival
                 // the server tells them apart for the admin only
                 var channel = Config.IsDiagCode(settings.BetaCode) ? "diag" : Config.IsBetaCode(settings.BetaCode) ? "beta" : "public";
                 var classic = ClassicPacks();
-                var presenceKey = $"{inGame}|{launched}|{role}|{server}|{build}|{channel}|{string.Join(",", classic)}";
+                var away = uiAway && !inGame;   // playing is never away
+                var own = inGame ? "game" : away ? "away" : "online";
+                if (own != lastOwnPresence) { lastOwnPresence = own; State(new Dictionary<string, object> { ["type"] = "presence", ["state"] = own }); }
+                var presenceKey = $"{inGame}|{launched}|{role}|{server}|{build}|{channel}|{string.Join(",", classic)}|{away}";
                 if (force || presenceKey != lastPresenceKey || DateTime.UtcNow - lastPresence > TimeSpan.FromSeconds(30))
                 {
-                    await api.Presence(inGame, launched, role, role == "client" ? server : null, build, channel, classic, relayPings);
+                    await api.Presence(inGame, launched, role, role == "client" ? server : null, build, channel, classic, relayPings, away);
                     lastPresence = DateTime.UtcNow;
                     lastPresenceKey = presenceKey;
                 }
@@ -1180,7 +1372,9 @@ namespace PropnightRevival
             try
             {
                 File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-game.txt"),
-                    $"visibility={(session.Bool("public") ? "public" : "private")}\nport={session.Long("port")}\nat={at}\n");
+                    $"visibility={(session.Bool("public") ? "public" : "private")}\nport={session.Long("port")}\nat={at}\n"
+                    // match resume on for this game (server 2026-11-09+): else the mod shows the host-left screen at once
+                    + (session.ContainsKey("resume") ? $"resume={(session.Bool("resume") ? 1 : 0)}\n" : ""));
             }
             catch (IOException e) { Log.Write("game visibility: " + e.Message); }
         }
@@ -1228,6 +1422,9 @@ namespace PropnightRevival
                 testChannel = me.Obj("testChannel");
             }
             var code = testChannel?.Str("channel") != null ? testChannel.Str("code") : null;
+            // the channel picked in Settings when the account opens both (2.0.30: options {beta, diag}); else its own
+            var picked = TestOptions().FirstOrDefault(o => o.Key == settings.TestPick).Value;
+            if (Config.IsBetaCode(picked)) code = picked;
             var want = settings.TestVersion && Config.IsBetaCode(code) ? code.Trim() : null;
             if ((want ?? "") == (settings.BetaCode ?? "").Trim()) { SendChannelState(); return; }
             var was = Config.IsBetaCode(settings.BetaCode);
@@ -1237,16 +1434,28 @@ namespace PropnightRevival
             settings.Save();
             Log.Write("update channel: " + (ChannelName() == "" ? "public" : ChannelName()));
             SendChannelState();
-            if (want != null) Toast("good", "Test version on", "This PC now gets the test version: press PLAY to update.");
+            if (want != null && was) Toast("good", "Test channel changed", "This PC now gets the " + (Config.IsBetaCode(want) && want.ToLowerInvariant().StartsWith("diag-") ? "Diag" : "Beta") + " version: press PLAY to update.");
+            else if (want != null) Toast("good", "Test version on", "This PC now gets the test version: press PLAY to update.");
             else if (was) Toast("good", "Test version off", "Back to the public version: press PLAY to update.");
             updater = null;                  // the next check reads the new channel
             if (recheck) await CheckUpdates(true);
         }
 
-        /// <summary>The channel for the page: the banner (channel), the Test version switch (shown with testAccess).</summary>
+        /// <summary>The test channels the account opens that have a release: (beta | diag, code), from /me's testChannel.options.</summary>
+        List<KeyValuePair<string, string>> TestOptions()
+        {
+            var options = testChannel?.Obj("options");
+            if (options == null) return new List<KeyValuePair<string, string>>();
+            return new[] { "beta", "diag" }.Where(ch => Config.IsBetaCode(options.Str(ch)))
+                .Select(ch => new KeyValuePair<string, string>(ch, options.Str(ch).Trim())).ToList();
+        }
+
+        /// <summary>The channel for the page: the banner (channel), the Test version switch (shown with testAccess), the
+        /// channel choice (testOptions, testPick: the channel this PC gets now) when the account opens both.</summary>
         void SendChannelState() => State(new Dictionary<string, object> { ["beta"] = Config.IsBetaCode(settings.BetaCode), ["channel"] = ChannelName(),
             ["testAccess"] = testChannel?.Str("channel") != null && Config.IsBetaCode(testChannel.Str("code")) ? testChannel.Str("channel") : "",
-            ["testOn"] = settings.TestVersion });
+            ["testOn"] = settings.TestVersion, ["testOptions"] = TestOptions().Select(o => o.Key).ToList(),
+            ["testPick"] = TestOptions().FirstOrDefault(o => o.Value == (settings.BetaCode ?? "").Trim()).Key ?? "" });
 
         /// <summary>invite | accept | decline | kick (username), leave: from the page or from the game (the mod).</summary>
         async Task SquadAction(string action, string username)
@@ -1266,7 +1475,8 @@ namespace PropnightRevival
 
         /// <summary>
         /// Requests from the game's own friends list and squad widget (the mod writes
-        /// Win64\revival-social-actions.txt: "invite NAME", "accept NAME", "decline NAME", "leave"; "joincheck PORT" before a join).
+        /// Win64\revival-social-actions.txt: "invite NAME", "accept NAME", "decline NAME", "leave"; "joincheck PORT" before a join;
+        /// "profile NAME" / "report NAME" from the TAB scoreboard).
         /// </summary>
         async Task ModSocialActions()
         {
@@ -1290,6 +1500,8 @@ namespace PropnightRevival
                 Log.Write("game social action: " + parts[0]);
                 if (parts[0] == "joincheck" && parts.Length > 1 && int.TryParse(parts[1], out var port)) { await AnswerJoinCheck(port); continue; }
                 if (parts[0] == "redeem" && parts.Length > 1) { await AnswerRedeem(parts[1].Trim()); continue; }
+                if (parts[0] == "profile" && parts.Length > 1) { await ShowProfileFromGame(Clean(parts[1].Trim())); continue; }
+                if (parts[0] == "report" && parts.Length > 1) { await ShowReportFromGame(Clean(parts[1].Trim())); continue; }
                 if (parts[0] == "left" && parts.Length > 1)
                 {
                     var how = parts[1].Trim().Split(' ');
@@ -1365,7 +1577,59 @@ namespace PropnightRevival
             catch (IOException e) { Log.Write("redeem answer: " + e.Message); }
         }
 
+        /// <summary>
+        /// The revival button of the game's TAB scoreboard (the mod: "profile NAME"): the launcher in front, on that player's
+        /// profile page (its own message when the name has no account).
+        /// </summary>
+        async Task ShowProfileFromGame(string name)
+        {
+            if (name.Length < 3 || name.Length > 20 || web.CoreWebView2 == null) return;
+            Log.Write("profile from the game's TAB");
+            if (overlay != null && overlay.IsOpen) overlay.Close(false);
+            ShowOverGame();
+            await web.CoreWebView2.ExecuteScriptAsync("openProfile(" + Json.Write(name) + ")");
+        }
+
+        /// <summary>The report button of the game's TAB scoreboard (the mod: "report NAME", RevivalFixes pak): the launcher in
+        /// front with its Report player window for that player, instead of the game's own report window.</summary>
+        async Task ShowReportFromGame(string name)
+        {
+            if (name.Length < 3 || name.Length > 20 || web.CoreWebView2 == null) return;
+            Log.Write("report from the game's TAB");
+            if (overlay != null && overlay.IsOpen) overlay.Close(false);
+            ShowOverGame();
+            await web.CoreWebView2.ExecuteScriptAsync("openPlayerReport(" + Json.Write(name) + ", { ingame: true })");
+        }
+
         static string Clean(string s) => new string((s ?? "").Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
+
+        /// <summary>A launcher sound ("message", "vote") at Settings › Launcher › Sounds › Volume.</summary>
+        void PlaySound(string name, bool test = false)
+        {
+            // a message and its invite arrive together: one sound
+            if (name == "message" && !test && DateTime.UtcNow - lastChime < TimeSpan.FromSeconds(2)) return;
+            if (name == "message") lastChime = DateTime.UtcNow;
+            try { Sounds.Play(name, settings.SoundVolume); }
+            catch (Exception ex) { Log.Write(name + " sound: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// The friends view's new invites (squad, game, pre-lobby) and friend requests: the message sound, once for all of a
+        /// refresh (Settings › Launcher › Message sound). Those already there at sign-in only fill the lists.
+        /// </summary>
+        void InviteSound(Dictionary<string, object> f)
+        {
+            var fresh = freshInvite;
+            foreach (var i in f.Obj("lobby")?.Objs("invites") ?? Enumerable.Empty<Dictionary<string, object>>())
+                fresh |= seenLobbyInvites.Add(i.Str("from") + "|" + i.Str("at"));
+            // (a request declined then sent again sounds again)
+            if (f.ContainsKey("incoming")) seenRequests.IntersectWith(f.Strs("incoming"));
+            foreach (var n in f.Strs("incoming"))
+                fresh |= seenRequests.Add(n);
+            var primed = invitesPrimed;
+            invitesPrimed = true;
+            if (fresh && primed && settings.MessageSound) PlaySound("message");
+        }
 
         /// <summary>
         /// The squad part of the friends view: invites (toast, and the game's dialog), following the leader
@@ -1381,6 +1645,7 @@ namespace PropnightRevival
             {
                 var key = invite.Str("from") + "|" + invite.Str("at");
                 if (!seenSquadInvites.Add(key)) continue;
+                freshInvite = true;
                 // no toast: the invite is in the Friends card (SQUAD INVITES) and, game running, in the game's dialog (in the
                 // menu) or the overlay's notification and card (in a match: no dialog over the match)
                 if (running && OverlayTakesInvites())
@@ -1497,6 +1762,9 @@ namespace PropnightRevival
                 outdatedShown = latest;
                 Log.Write($"game update published while playing: {settings.GameBuild} -> {latest}");
                 File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-map-command.txt"), "outdated update");
+                // the game's banner (main menu and lobby) and, during a match, a red line in its chat (mod social.lua)
+                File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-update.txt"),
+                    $"current={settings.GameVersion ?? ""}\nnew={check.Manifest.Str("version")}\n");
                 Toast("info", "Game update available", "Close Propnight and press PLAY to install it.", 9000);
             }
             catch (Exception e) { Log.Write("update check while playing: " + e.Message); }
@@ -1508,6 +1776,7 @@ namespace PropnightRevival
             ["Abbey"] = "abbey", ["Farm (Night)"] = "farm-night", ["Circus"] = "circus", ["Fantasticville"] = "fantasticville", ["Egypt"] = "egypt",
             ["Camp"] = "camp", ["Dark Swamp"] = "dark-swamp", ["Kitchen"] = "kitchen", ["Goldhorn Mine"] = "golden-mine", ["House"] = "mansion",
             ["Summer Camp"] = "camp-2022", ["Farm (Day)"] = "farm-day", ["School"] = "school", ["Castle"] = "castle", ["Village"] = "village",
+            ["School (Keymaster's Game)"] = "school-2022", ["House (Keymaster's Game)"] = "mansion", ["Castle (Keymaster's Game)"] = "castle",
         };
         // a map's other versions ("House (Reborn)", "School (2022)") show its picture
         static bool MapImage(string map, out string image) =>
@@ -1517,6 +1786,18 @@ namespace PropnightRevival
 
         bool DiscordOn => signedIn && settings.DiscordActivity;
 
+        static Dictionary<string, object> RpcButton(string label, string url) => new Dictionary<string, object> { ["label"] = label, ["url"] = url };
+        /// <summary>The avatar as Discord shows it surely: the API's PNG copy of a portrait or an approved picture.</summary>
+        static string AvatarPng(string url) =>
+            url != null && System.Text.RegularExpressions.Regex.IsMatch(url, @"^https://api\.propnightrevival\.online/revival/(social-img/c\d{1,3}|profile-img/[0-9a-f]{24})\.(webp|gif)$")
+                ? System.Text.RegularExpressions.Regex.Replace(url, @"\.(webp|gif)$", ".png") : null;
+
+        /// <summary>
+        /// The Discord activity (canvas "social extras", page 3): in the launcher and with an open group, the logo large and the
+        /// player's avatar small (name, level, rank); in a game, the map large and the avatar small. Buttons: Join the group / Join
+        /// the game when there is one to join, View profile when the player's public page is on, else Get Propnight Revival.
+        /// Appear offline or "Show friends what I play" off: only "Playing Propnight Revival".
+        /// </summary>
         void UpdateDiscord()
         {
             if (!DiscordOn)
@@ -1528,20 +1809,64 @@ namespace PropnightRevival
             var running = playing || GameInstall.IsRunning();
             var you = lastFriendsView?.Obj("you");
             var session = running ? you?.Obj("session") : null;
+            var card = discordCard;
+            var hidden = card != null && (card.Str("presence") == "invisible" || card.ContainsKey("showActivity") && !card.Bool("showActivity"));
+            var name = card?.Str("name");
+            var avatar = AvatarPng(card?.Str("avatar"));
+            var level = settings.DiscordShowLevel && card != null && card.ContainsKey("level") ? card.Long("level") : 0;
+            var rank = settings.DiscordShowLevel ? card?.Str("rank") : null;
+            if (rank == "Unranked") rank = null;
+            var get = RpcButton("Get Propnight Revival", SiteUrl);
+            var view = card != null && card.Bool("publicPage") && name != null ? RpcButton("View profile", SiteUrl + "/u/" + Uri.EscapeDataString(name)) : null;
             var assets = new Dictionary<string, object> { ["large_image"] = SiteUrl + "/img/discord-icon.png", ["large_text"] = "Propnight Revival" };
-            var activity = new Dictionary<string, object> { ["assets"] = assets,
-                ["buttons"] = new object[] { new Dictionary<string, object> { ["label"] = "Get Propnight Revival", ["url"] = SiteUrl } } };
+            var activity = new Dictionary<string, object> { ["assets"] = assets };
+            var buttons = new List<object>();
+            Action smallAvatar = () => { if (avatar != null) { assets["small_image"] = avatar; assets["small_text"] = name; } };
+            var group = hidden || session != null ? null : discordGroup;
+            var squad = lastFriendsView?.Obj("squad")?.Objs("members").Count() ?? 0;
             string key;
-            if (!running) { activity["details"] = "In the launcher"; key = "launcher"; }
-            else if (session == null) { activity["details"] = "In the menu"; key = "menu"; }
+            if (hidden)
+            {
+                activity["details"] = "Playing Propnight Revival";
+                buttons.Add(get);
+                key = "hidden";
+            }
+            else if (group != null)
+            {
+                var want = new List<string>();
+                if (group.Bool("killer")) want.Add("a killer");
+                var n = (int)group.Long("survivors");
+                if (n > 0) want.Add(n == 1 ? "1 survivor" : n + " survivors");
+                activity["details"] = "Looking for " + string.Join(" and ", want);
+                activity["state"] = (group.Str("mode") == "ranked" ? "Ranked" : "Unranked") + " · in a group";
+                activity["party"] = new Dictionary<string, object> { ["id"] = "group-" + group.Str("id"), ["size"] = new[] { Math.Max(1, Math.Min(5, squad)), 5 } };
+                smallAvatar();
+                buttons.Add(RpcButton("Join the group", SiteUrl + "/group/" + group.Str("id")));
+                buttons.Add(view ?? get);
+                key = "group:" + group.Str("id");
+            }
+            else if (session == null)
+            {
+                var where = running ? "in the menu" : "in the launcher";
+                if (name != null)
+                {
+                    activity["details"] = level > 0 ? name + " · Level " + level : name;
+                    activity["state"] = rank != null ? rank + " · " + where : char.ToUpper(where[0]) + where.Substring(1);
+                }
+                else activity["details"] = char.ToUpper(where[0]) + where.Substring(1);
+                smallAvatar();
+                if (view != null) buttons.Add(view);
+                buttons.Add(get);
+                key = running ? "menu" : "launcher";
+            }
             else
             {
                 var map = MapName(session.Str("map"));
                 var match = session.Str("phase") == "match";
+                var players = (int)Math.Max(1, Math.Min(5, session.Long("players")));
                 activity["details"] = (match ? "In a match" : "In the lobby") + " · " + map;
                 activity["state"] = (you.Bool("hosting") ? "Hosting a " : "In a ") + (session.Bool("public") ? "public" : "private") + " game";
-                activity["party"] = new Dictionary<string, object> { ["id"] = session.Str("id"),
-                    ["size"] = new[] { (int)Math.Max(1, Math.Min(5, session.Long("players"))), 5 } };
+                activity["party"] = new Dictionary<string, object> { ["id"] = session.Str("id"), ["size"] = new[] { players, 5 } };
                 if (MapImage(map, out var image))
                 {
                     assets["large_image"] = SiteUrl + "/img/maps/" + image + ".jpg";
@@ -1549,8 +1874,14 @@ namespace PropnightRevival
                     assets["small_image"] = SiteUrl + "/img/discord-icon.png";
                     assets["small_text"] = "Propnight Revival";
                 }
+                smallAvatar();
+                // a public lobby with room: Join the game (the site's /join page opens the launcher on it)
+                if (!match && session.Bool("public") && players < 5) buttons.Add(RpcButton("Join the game", SiteUrl + "/join/" + session.Str("id")));
+                if (view != null) buttons.Add(view);
+                buttons.Add(get);
                 key = "game:" + session.Str("id") + ":" + (match ? "match" : "lobby");
             }
+            activity["buttons"] = buttons.Take(2).ToArray();
             if (key != activityKey) { activityKey = key; activitySince = DateTime.UtcNow; }
             activity["timestamps"] = new Dictionary<string, object> { ["start"] = (long)(activitySince - new DateTime(1970, 1, 1)).TotalSeconds };
             var __ = discord.Set(activity);
@@ -1574,7 +1905,9 @@ namespace PropnightRevival
             WriteGameVisibility(f.Obj("you")?.Obj("session"));
             overlayFriends = f.Objs("friends").ToList();
             OverlayFriendsSeen(f);
+            freshInvite = false;
             ApplySquad(f);
+            ApplyLobby(f);
             var you = f.Obj("you");
             if (you != null && you.Str("proof") != null && you.ContainsKey("proofPort") && you["proofPort"] != null)
             {
@@ -1616,9 +1949,13 @@ namespace PropnightRevival
             // match resume (server app.mjs): the survivor hosting this player's match left it; this game hosts the match again
             // (the server's snapshot of it in revival-resume.txt) or joins the player who does. The mod waits for its menu.
             var resume = f.Obj("resumeOrder");
-            if (resume != null && resume.Str("id") + resume.Str("role") != lastResumeOrder && GameInstall.IsRunning() && GameInstall.IsGameRoot(settings.GameRoot))
+            // ("gone": the players whose game closed, sent to the new host until its match starts; again when the list grows)
+            var goneNames = resume?.Str("role") == "gone"
+                ? string.Join(",", resume.Strs("names").Select(n => new string(n.Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray())).Where(n => n.Length > 0))
+                : "";
+            if (resume != null && resume.Str("id") + resume.Str("role") + goneNames != lastResumeOrder && GameInstall.IsRunning() && GameInstall.IsGameRoot(settings.GameRoot))
             {
-                lastResumeOrder = resume.Str("id") + resume.Str("role");
+                lastResumeOrder = resume.Str("id") + resume.Str("role") + goneNames;
                 var snap = new string((resume.Str("snap") ?? "").Where(c => char.IsLetterOrDigit(c) || "|,.=:_-".IndexOf(c) >= 0).ToArray());
                 var map = new string((resume.Str("map") ?? "").Where(char.IsLetterOrDigit).ToArray());
                 var host = resume.Str("host") ?? "";
@@ -1627,16 +1964,25 @@ namespace PropnightRevival
                     command = $"resumehost {map} {(resume.Str("visibility") == "public" ? "public" : "private")}";
                 else if (resume.Str("role") == "join" && System.Text.RegularExpressions.Regex.IsMatch(host, @"^\d{1,3}(\.\d{1,3}){3}$"))
                     command = $"resumejoin {host} {resume.Long("port")} {new string((resume.Str("hostName") ?? "").Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray())}".TrimEnd();
+                else if (resume.Str("role") == "gone" && goneNames.Length > 0)
+                    command = "resumegone " + goneNames;   // this game hosts the resumed match: the mod does not wait for them
+                else if (resume.Str("role") == "cancel")
+                {
+                    // the new host left before the resumed match started and nobody else can host it: the mod ends the resume
+                    // and the host-left screen shows what the server gave (asked again for 40 s, as after a match)
+                    command = "resumecancel";
+                    hostLeftUntil = DateTime.UtcNow.AddSeconds(40);
+                }
                 if (command != null)
                 {
                     try
                     {
                         var win64 = GameInstall.Win64(settings.GameRoot);
-                        File.WriteAllText(Path.Combine(win64, "revival-resume.txt"), snap);
+                        if (resume.Str("role") == "host" || resume.Str("role") == "join") File.WriteAllText(Path.Combine(win64, "revival-resume.txt"), snap);
                         File.WriteAllText(Path.Combine(win64, "revival-map-command.txt"), command);
                         if (resume.Str("role") == "host")
                             Toast("info", "The host left the match", $"You host it now on {MapName(map)}: the others are coming back.", 8000);
-                        else
+                        else if (resume.Str("role") == "join")
                             Toast("info", "The host left the match", "The match goes on at another player's game: joining it.", 8000);
                         Log.Write($"match resume: {command}");
                     }
@@ -1647,6 +1993,7 @@ namespace PropnightRevival
             {
                 var key = invite.Str("from") + "|" + invite.Str("at");
                 if (!seenInvites.Add(key)) continue;
+                freshInvite = true;
                 var session = invite.Obj("session");
                 Toast("info", invite.Str("from") + " invites you", $"{MapName(session.Str("map"))} · {session.Long("players")}/5 players", 30_000,
                     new Dictionary<string, object> { ["label"] = "Join", ["cmd"] = "join", ["port"] = session.Long("port"), ["from"] = invite.Str("from"),
@@ -1679,6 +2026,7 @@ namespace PropnightRevival
                     catch (IOException e) { Log.Write("invite to game: " + e.Message); }
                 }
             }
+            InviteSound(f);
         }
 
         /// <summary>
@@ -1757,13 +2105,27 @@ namespace PropnightRevival
         }
 
         // ---- optional content (DLC tab)
+        // the classic packs, in the DLC tab since the split (2026-10-30): already seen by everyone when the page got its NEW
+        static readonly string[] DlcShownBefore = { "classic-2021", "classic-2022", "classic-2023" };
+
         void SendDlcState()
         {
             if (updater?.Manifest == null) return;
+            if (settings.DlcSeen == null)
+            {
+                // first time on a launcher with NEW packs (2026-11-17): the packs installed and the ones the tab always showed
+                // are not new; the others (Reborn Beta, the test channels' packs) are, until the tab is opened
+                settings.DlcSeen = new Dictionary<string, object>();
+                foreach (var id in updater.Manifest.Objs("dlc").Select(p => p.Str("id")).Where(id => id != null && (settings.DlcOn(id) || DlcShownBefore.Contains(id))))
+                    settings.DlcSeen[id] = true;
+                settings.Save();
+            }
             var packs = updater.Manifest.Objs("dlc").Select(p => new Dictionary<string, object>
             {
                 ["id"] = p.Str("id"), ["title"] = p.Str("title"), ["description"] = p.Str("description"), ["size"] = p.Long("size"),
                 ["on"] = settings.DlcOn(p.Str("id")),
+                ["new"] = !settings.DlcOn(p.Str("id")) && !settings.DlcSeen.ContainsKey(p.Str("id") ?? ""),
+                ["tags"] = p.Strs("tags").ToArray(),
                 ["maps"] = p.Objs("maps").Select(m => new Dictionary<string, object> {
                     ["name"] = m.Str("name"), ["from"] = m.Str("from"),
                     ["image"] = updater.Manifest.Str("filesUrl") + m.Obj("image")?.Str("sha256") }).ToArray(),
@@ -1781,7 +2143,8 @@ namespace PropnightRevival
             work.RemoveObsolete(settings.GameRoot);
         }
 
-        /// <summary>The map pack of a map, by its key or its name ("2021" / "2022" / "2023", "rb": the Reborn Beta maps), null when not known.</summary>
+        /// <summary>The map pack of a map, by its key or its name ("2021" / "2022" / "2023", "rb": the Reborn Beta maps, "km": Keymaster's
+        /// Game), null when not known.</summary>
         static string ClassicPackOf(string map)
         {
             if (string.IsNullOrEmpty(map)) return null;
@@ -1791,8 +2154,10 @@ namespace PropnightRevival
                 case "Farm": case "Castle": case "Swamp": case "School": case "MansionReborn": case "House": case "Village": return "2022";
                 case "SchoolMerged": case "RebornNewMansion": return "2023";
                 case "CampPreReborn": case "FarmPreReborn": case "FarmPreRebornDay": return "rb";
+                case "SchoolFight": case "HouseFight": case "CastleFight": return "km";
             }
             if (map.Contains("(Reborn Beta")) return "rb";
+            if (map.Contains("(Keymaster's Game)")) return "km";
             if (map.Contains("(2021)")) return "2021";
             if (map.Contains("(Reborn)")) return "2023";
             if (map.Contains("(2022)") || map.Contains("(Day)") || map.Contains("(day)")) return "2022";
@@ -1800,9 +2165,22 @@ namespace PropnightRevival
         }
 
         /// <summary>The map packs turned on, as the server and the mod name them ("2021", "2022", "2023"; "rb": the Reborn Beta
-        /// maps, DLC "reborn-beta", 2026-11-03).</summary>
+        /// maps, DLC "reborn-beta", 2026-11-03; "km": Keymaster's Game, DLC "keymaster", 2026-11-16).</summary>
         List<string> ClassicPacks() => new[] { "2021", "2022", "2023" }.Where(y => settings.DlcOn("classic-" + y))
-            .Concat(settings.DlcOn("reborn-beta") ? new[] { "rb" } : new string[0]).ToList();
+            .Concat(settings.DlcOn("reborn-beta") ? new[] { "rb" } : new string[0])
+            .Concat(settings.DlcOn("keymaster") ? new[] { "km" } : new string[0]).ToList();
+
+        /// <summary>The Maps &amp; DLC tab was opened with these packs NEW: they are not any more (settings.json DlcSeen).</summary>
+        void DlcSeen(IEnumerable<string> ids)
+        {
+            if (settings.DlcSeen == null) settings.DlcSeen = new Dictionary<string, object>();
+            var changed = false;
+            foreach (var id in ids ?? Enumerable.Empty<string>())
+                if (!string.IsNullOrEmpty(id) && id.Length < 64 && !settings.DlcSeen.ContainsKey(id)) { settings.DlcSeen[id] = true; changed = true; }
+            if (!changed) return;
+            settings.Save();
+            SendDlcState();
+        }
 
         async Task SetDlc(string id, bool on)
         {
@@ -1895,7 +2273,8 @@ namespace PropnightRevival
             ["BigAbbey"] = "Abbey", ["BigFarm"] = "Farm (Night)", ["BigCircus"] = "Circus", ["SnowMain"] = "Fantasticville", ["BigEgypt"] = "Egypt", ["SummerCampMRG"] = "Camp", ["YagaMap"] = "Dark Swamp", ["Kitchen"] = "Kitchen", ["GoldenMine"] = "Goldhorn Mine", ["MansionReborn"] = "House (2022)", ["CampArena"] = "Summer Camp", ["Farm"] = "Farm (Day)", ["School"] = "School (2022)",
             ["House"] = "House (2022)", ["Castle"] = "Castle", ["Swamp"] = "Village", ["SchoolMerged"] = "School (Reborn)", ["RebornNewMansion"] = "House (Reborn)",
             ["Abbey2021"] = "Abbey (2021)", ["Camp2021"] = "Camp (2021)", ["House2021"] = "House (2021)",
-            ["CampPreReborn"] = "Camp (Reborn Beta)", ["FarmPreReborn"] = "Farm (Reborn Beta)", ["FarmPreRebornDay"] = "Farm (Reborn Beta, day)" };
+            ["CampPreReborn"] = "Camp (Reborn Beta)", ["FarmPreReborn"] = "Farm (Reborn Beta)", ["FarmPreRebornDay"] = "Farm (Reborn Beta, day)",
+            ["SchoolFight"] = "School (Keymaster's Game)", ["HouseFight"] = "House (Keymaster's Game)", ["CastleFight"] = "Castle (Keymaster's Game)" };
         static string MapName(string map) => map != null && MapNames.TryGetValue(map, out var name) ? name : (map ?? "").Replace("_Main", "").Replace('_', ' ').Trim();
 
         // ---- bug report (Settings): what happened + the logs, and up to 3 video clips if the player picked some, to the admin panel.
@@ -2127,7 +2506,7 @@ namespace PropnightRevival
         // ---- community (suggestions): the page calls the server through here, its token stays in the launcher. Only these
         // paths; the answer goes back with the page's request id.
         static readonly System.Text.RegularExpressions.Regex CommunityPath =
-            new System.Text.RegularExpressions.Regex(@"^/revival/((suggestions(/seen)?|suggestion(/(vote|comment|delete|edit))?)(\?id=\d+)?|polls|poll/vote|notifications(/read)?|matches|match/report|match\?ref=[mdh](%3A|:)[\w-]{1,64})$");
+            new System.Text.RegularExpressions.Regex(@"^/revival/((suggestions(/seen)?|suggestion(/(vote|comment|delete|edit))?)(\?id=\d+)?|polls|poll/vote|notifications(/read)?|matches|match/report|player/report|friends/request-(squad|name)|match\?ref=[mdh](%3A|:)[\w-]{1,64}|social/profile(\?u=[\w-]{1,32})?|social/avatars\?u=[\w-]{1,32}(%2C[\w-]{1,32}){0,39}|social/profile/edit|social/image/(delete|move)|social/leaderboard(\?board=[a-z]{1,10}(&role=[a-z]{1,10})?(&country=[a-z]{2}(-[a-z]{3})?)?(&friends=1)?)?|lfg(/(post|close|ask|cancel|answer))?|messages(\?with=[\w-]{1,32}|/(send|read|mute|report|typing))|crews(/(mine|board|create|edit|join|cancel|answer|invite|invite-answer|role|remove|leave|disband|report))?|crew\?id=\d{1,10}|lobby/(create|invite|accept|decline|pick|vote|start|leave|kick)|room-check)$");
         async Task CommunityCall(Dictionary<string, object> m)
         {
             var path = m.Str("path") ?? "";
@@ -2158,6 +2537,27 @@ namespace PropnightRevival
                 var data = Convert.FromBase64String(m.Str("data") ?? "");
                 if (data.Length > 5 * 1024 * 1024) throw new ApiException(413, "the image is over 5 MB");
                 reply["data"] = await api.UploadSuggestionImage(data, m.Str("mime"));
+                reply["ok"] = true;
+            }
+            catch (Exception e)
+            {
+                reply["ok"] = false;
+                reply["error"] = e is ApiException ? e.Message : e is FormatException ? "this image could not be read" : "The server could not be reached. Try again later.";
+            }
+            State(reply);
+        }
+
+        /// <summary>The player's own avatar or banner (Edit profile, 1.59.0), raw: the server makes it again and the team approves it.</summary>
+        async Task ProfileImage(Dictionary<string, object> m)
+        {
+            var reply = new Dictionary<string, object> { ["type"] = "community", ["rid"] = m.Str("rid") };
+            try
+            {
+                var kind = m.Str("kind") == "banner" ? "banner" : "avatar";
+                var data = Convert.FromBase64String(m.Str("data") ?? "");
+                if (data.Length > 8 * 1024 * 1024) throw new ApiException(413, "the image is over 8 MB");
+                double Pos(string k) { double v; return double.TryParse(m.Str(k), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v) ? Math.Max(0, Math.Min(1, v)) : 0.5; }
+                reply["data"] = await api.UploadProfileImage(data, m.Str("mime"), kind, Pos("x"), Pos("y"));
                 reply["ok"] = true;
             }
             catch (Exception e)
@@ -2440,11 +2840,18 @@ namespace PropnightRevival
                         ["joinable"] = s.Bool("joinable"), ["phase"] = s.Str("phase") };
                 friends.Add(d);
             }
+            // the players' pictures (lower-case name -> address): the lobby's players (no request of its own), the friends, the player
+            var avatars = lobbyAvatars.KnownUrls();
+            foreach (var fr in f?.Objs("friends") ?? Enumerable.Empty<Dictionary<string, object>>())
+                if (fr.Str("username") != null && fr.Str("avatar") != null) avatars[fr.Str("username").ToLowerInvariant()] = fr.Str("avatar");
+            var youName = squad?.Str("you") ?? settings.Username;
+            if (youName != null && you?.Str("avatar") != null) avatars[youName.ToLowerInvariant()] = you.Str("avatar");
             var start = overlay.GameStart;
             var state = new Dictionary<string, object>
             {
-                ["you"] = squad?.Str("you") ?? settings.Username,
+                ["you"] = youName,
                 ["friends"] = friends,
+                ["avatars"] = avatars.Where(kv => kv.Value.StartsWith("https://", StringComparison.Ordinal)).ToDictionary(kv => kv.Key, kv => (object)kv.Value),
                 ["squad"] = (squad?.Objs("members") ?? Enumerable.Empty<Dictionary<string, object>>())
                     .Select(m => (object)new Dictionary<string, object> { ["name"] = m.Str("username"), ["leader"] = m.Bool("leader"), ["online"] = m.Bool("online") }).ToList(),
                 ["squadInvites"] = (squad?.Objs("invites") ?? Enumerable.Empty<Dictionary<string, object>>()).Select(i => (object)Clean(i.Str("from"))).Distinct().ToList(),
@@ -2459,8 +2866,10 @@ namespace PropnightRevival
                 ["sessionStart"] = start.HasValue ? (object)(long)(start.Value - new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc)).TotalMilliseconds : null,
                 ["session"] = OverlaySession(start),
                 ["prefs"] = new Dictionary<string, object> { ["notifyOnline"] = settings.OverlayNotifyOnline, ["notifyInvites"] = settings.OverlayNotifyInvites,
-                    ["timer"] = settings.OverlayTimer, ["right"] = settings.OverlayRight },
+                    ["timer"] = settings.OverlayTimer, ["right"] = settings.OverlayRight, ["cast"] = settings.OverlayCast },
+                ["castUrl"] = overlay.CastUrl,
                 ["fps"] = settings.OverlayFps,
+                ["theme"] = settings.Theme ?? "red",
                 ["report"] = overlayReport,
             };
             // this game: the mod's answer (overlay.lua, once a second while the overlay is open)
@@ -2593,9 +3002,13 @@ namespace PropnightRevival
                         case "timer": settings.OverlayTimer = overlay.TimerOn = on; break;
                         case "right": settings.OverlayRight = overlay.ToastsRight = on; break;
                         case "fps": settings.OverlayFps = overlay.FpsOn = on; OverlayGameCommand("fps", on ? "1" : "0", 0); break;
+                        case "cast": settings.OverlayCast = overlay.CastOn = on; break;
                         default: return;
                     }
                     settings.Save();
+                    break;
+                case "castLink":
+                    if (overlay.CastUrl != null) try { Clipboard.SetText(overlay.CastUrl); } catch (Exception e) { Log.Write("cast link: " + e.Message); }
                     break;
                 case "launcher":
                     // the launcher in front, on the page asked (its own functions)
@@ -2670,7 +3083,7 @@ namespace PropnightRevival
             if (classicMap && (pack == null ? ClassicPacks().Count == 0 : !ClassicPacks().Contains(pack)))
             {
                 // the game would fail to load the map: say why, here and in the game's own message box
-                var packName = pack == "rb" ? "Reborn Beta" : pack != null ? pack + " Classic" : "Classic maps";
+                var packName = pack == "rb" ? "Reborn Beta" : pack == "km" ? "Keymaster's Game" : pack != null ? pack + " Classic" : "Classic maps";
                 Toast("warn", packName + " needed", $"{from ?? "Your friend"} plays on {map ?? "a classic map"}. Install the {packName} in the DLC tab to join.", 9000);
                 State(new Dictionary<string, object> { ["tab"] = "dlc" });
                 if (GameInstall.IsRunning())
@@ -2690,6 +3103,76 @@ namespace PropnightRevival
             pendingHostCommand = null;
             Toast("info", "Joining " + (from ?? "your friend"), "Propnight starts, then joins the game.");
             await Play();
+        }
+
+        /// <summary>
+        /// Create a game's pre-lobby once its map is chosen (server gamelobby.mjs, in the friends view): the leader's launcher
+        /// hosts it (public: the quick play order "hostpublic MAP ROLE", private: "hostprivate MAP"), at once in the game's
+        /// menu or at its launch; the others start Propnight and join the leader's game once it is open, as a squad follows
+        /// (once per game, again after 45 s, 3 tries).
+        /// </summary>
+        void ApplyLobby(Dictionary<string, object> f)
+        {
+            var l = f.Obj("lobby");
+            if (l == null || l.Str("stage") != "start" || !GameInstall.IsGameRoot(settings.GameRoot)) return;
+            var running = GameInstall.IsRunning();
+            var order = l.Obj("hostOrder");
+            if (order != null)
+            {
+                if (order.Str("id") == lastLobbyOrder) return;
+                var map = new string((order.Str("map") ?? "").Where(char.IsLetterOrDigit).ToArray());
+                var role = new string((order.Str("role") ?? "any").Where(char.IsLetter).ToArray());
+                // the member who chose killer (the mod gives them the killer place, the host a survivor's)
+                var killer = new string((order.Str("killer") ?? "").Where(c => char.IsLetterOrDigit(c) || c == '_' || c == '-').ToArray());
+                var command = (order.Str("visibility") == "private" ? $"hostprivate {map} {role}" : $"hostpublic {map} {role}") + (killer.Length > 0 ? " " + killer : "");
+                if (running)
+                {
+                    lastLobbyOrder = order.Str("id");
+                    try { File.WriteAllText(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-map-command.txt"), command); }
+                    catch (IOException e) { Log.Write("lobby order: " + e.Message); return; }
+                    Toast("good", "Creating your game", $"Propnight opens {MapName(map)}: your lobby joins you. Go back to its main menu if you are in a game.", 9000);
+                }
+                else if (!busy && !playing)
+                {
+                    lastLobbyOrder = order.Str("id");
+                    pendingJoinPort = null;
+                    pendingJoinHost = null;
+                    pendingHostCommand = command;
+                    Toast("info", "Creating your game", $"Propnight starts, then opens {MapName(map)}. Your lobby joins you.", 9000);
+                    var _ = Play();
+                }
+                else return;
+                Log.Write($"lobby: hosting {map} ({order.Str("visibility")})");
+                var __ = api.Call(System.Net.Http.HttpMethod.Post, "/revival/lobby/hosting", new Dictionary<string, object>()).ContinueWith(x => { });
+                return;
+            }
+            if (l.Strs("inGame").Contains(l.Str("you"))) return;   // already in the leader's game
+            var follow = l.Obj("follow");
+            if (!running)
+            {
+                // the game starts while the leader's opens: the follow joins it once both run
+                if (busy || playing || l.Str("id") == lastLobbyStart) return;
+                lastLobbyStart = l.Str("id");
+                if (follow != null && follow.Bool("joinable"))
+                {
+                    var _ = JoinFriend((int)follow.Long("port"), l.Str("leader"), follow.Bool("dlc"), MapName(follow.Str("map")), follow.Str("host"));
+                    return;
+                }
+                Toast("info", "The game starts", $"Propnight starts; you join {Clean(l.Str("leader"))}'s game on {MapName(l.Str("winner"))} once it is open.", 9000);
+                var __ = Play();
+                return;
+            }
+            if (follow == null || !follow.Bool("joinable")) return;
+            var id = follow.Str("id");
+            var again = id == lobbyFollow && lobbyFollowTries < 3 && DateTime.UtcNow - lobbyFollowAt > TimeSpan.FromSeconds(45);
+            if (id != lobbyFollow || again)
+            {
+                lobbyFollowTries = id == lobbyFollow ? lobbyFollowTries + 1 : 1;
+                lobbyFollow = id;
+                lobbyFollowAt = DateTime.UtcNow;
+                Log.Write("lobby: joining " + l.Str("leader") + " (try " + lobbyFollowTries + ")");
+                var _ = JoinFriend((int)follow.Long("port"), l.Str("leader"), follow.Bool("dlc"), MapName(follow.Str("map")), follow.Str("host"));
+            }
         }
 
         /// <summary>Servers › Create a game (roadmap 21): the server says yes (a map, the role) unless a public game near this player
@@ -2765,6 +3248,9 @@ namespace PropnightRevival
                 var previousVersion = manifestVersion;
                 launcherUpdate = updater.LauncherUpdate();
                 manifestVersion = updater.Manifest.Str("version");
+                // (the installed files' version, for the game's update banner: known from the manifest they match)
+                if (string.IsNullOrEmpty(settings.GameVersion) && settings.GameBuild != null && Updater.BuildOf(updater.Manifest) == settings.GameBuild)
+                { settings.GameVersion = manifestVersion; settings.Save(); }
                 await SendNotes();
                 if (launcherUpdate != null && launcherUpdate != previousLauncher)
                     Toast("warn", $"Launcher {launcherUpdate} available", "Update the launcher to keep playing.", 9000);
@@ -2862,7 +3348,7 @@ namespace PropnightRevival
                 Toast("good", register ? "Account created" : "Signed in", "Welcome, " + settings.Username + "!");
                 await EnterHome();
             }
-            catch (Exception e) { State(new Dictionary<string, object> { ["authError"] = e is ApiException a ? AuthMessage(a) : e.Message }); }
+            catch (Exception e) { State(new Dictionary<string, object> { ["authError"] = e is ApiException a ? AuthMessage(a) : Offline(e) ? "Cannot reach the server. Check your internet connection." : e.Message }); }
         }
 
         async Task SignOut()
@@ -2875,6 +3361,7 @@ namespace PropnightRevival
             friendsLoop++;
             friendsEtag = null;
             seenInvites.Clear();
+            invitesPrimed = false;
             ShowAuth("");
         }
 
@@ -2960,8 +3447,11 @@ namespace PropnightRevival
                 manifestVersion = work.Manifest.Str("version");
                 SendUpdateState();
                 settings.GameBuild = Updater.BuildOf(work.Manifest);
+                settings.GameVersion = work.Manifest.Str("version");
                 settings.Save();
                 outdatedShown = null;
+                try { File.Delete(Path.Combine(GameInstall.Win64(settings.GameRoot), "revival-update.txt")); }   // up to date: no banner
+                catch (Exception x) when (x is IOException || x is UnauthorizedAccessException) { Log.Write("update notice file: " + x.Message); }
                 // test channel (revival-beta.txt): the mod makes hosted games need 1 machine (quick end-of-match tests);
                 // diagnostic channel (revival-diag.txt): the mod times its ticks and the frame rate (UE4SS.log, sent with a
                 // bug report). The file holds the token the server signed for this channel's code (server channel.mjs, 48 h):
@@ -3030,14 +3520,6 @@ namespace PropnightRevival
                         await ReportTool(foreign.Select(m => "Lua mod " + m).ToList(), "play");
                         throw new Exception($"Mods that are not the revival's were added: {string.Join(", ", foreign)}. Remove them before starting the game.");
                     }
-                }
-                // anti-cheat: no game while a memory editor is open (CheatTools)
-                var tools = CheatTools.Open();
-                if (tools.Count > 0)
-                {
-                    Log.Write("cheat tool open, game not started: " + string.Join(", ", tools));
-                    await ReportTool(tools, "play");
-                    throw new Exception($"Close {string.Join(", ", tools)} before starting the game.");
                 }
                 toolsReported.Clear();
                 toolsCheckedAt = DateTime.UtcNow;
@@ -3136,7 +3618,7 @@ namespace PropnightRevival
                     Toast("warn", "The game crashed on your graphics card", "Starting it with DirectX 11 usually fixes this (also in Settings › Game).", 20000,
                         new Dictionary<string, object> { ["label"] = "Use DirectX 11", ["cmd"] = "dx11On" });
             }
-            catch (ApiException e) when (e.Status == 401 || e.Status == 403)
+            catch (ApiException e) when (e.SessionRefused)
             {
                 settings.Token = null; api.Token = null; settings.Save();
                 ShowAuth(AuthMessage(e));

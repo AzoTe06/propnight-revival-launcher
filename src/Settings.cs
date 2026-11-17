@@ -18,20 +18,33 @@ namespace PropnightRevival
         public string SaveOwner;            // Steam ID of the account whose save is on disk
         public string BetaCode;             // test channel: /updates/beta-<code>/ (empty = the public release); since 1.56 the code the server gives the account
         public bool TestVersion;            // Settings › Test version (1.56): on, an account given a test channel plays its build
+        public string TestPick;             // Settings › Test version (2.0.30): beta | diag, the channel picked when the account opens both
         public bool LeftBeta;               // back from the test channel: the public launcher is installed even if older
         public bool DiscordActivity = true; // Discord Rich Presence, on by default, Settings switch
+        public bool DiscordShowLevel = true; // the activity shows the player's level and rank (1.63.0), Settings switch
+        public bool VoteNotify = true;      // a Windows notification when the vote starts, launcher not in front (1.65.23)
+        public bool VoteSound = true;       // the group's map vote starting plays a sound (1.65.17), Settings › Game switch
+        public bool MessageSound = true;    // a friend's message plays a sound (1.65.1), Settings › Launcher switch; invites and friend requests too
+        public static readonly string[] Themes = { "red", "blue", "violet", "orange", "green", "light" };
+        public string Theme = "red";        // the launcher's colours (Settings › Launcher › Theme): red, blue, violet, orange, green, light
+        public int SoundVolume = 80;        // the launcher's sounds, 0-100 % (Settings › Launcher › Sounds, Sounds.cs)
+        public string RecentEmojis;         // the chat's emoji picker: the last ones used, newest first, separated by spaces
         public bool DirectX11;              // start the game with -dx11 (Settings > Game): for a graphics card that crashes in DirectX 12
         public bool MinimizeOnPlay;         // PLAY sends the launcher to the notification area (Settings > Game); off: it stays open
         // the in-game overlay (Shift + F1, Overlay.cs): its notifications, their corner, the session timer in a corner
-        public bool OverlayNotifyOnline = true, OverlayNotifyInvites = true, OverlayTimer, OverlayRight, OverlayFps;
+        public bool OverlayNotifyOnline = true, OverlayNotifyInvites = true, OverlayTimer, OverlayRight, OverlayFps, OverlayCast = true;
         public string Language;             // the launcher's language (Settings > Game): en, fr, ru, es, de; null: Windows' own
         public string NotesSeen;            // newest patch notes entry shown on the home page (NEW until then)
         public string GameBuild;            // Updater.BuildOf the files installed at the last launch (what the game runs)
+        public string GameVersion;          // the manifest version of those files (the game's update banner)
         // accounts (lower case, comma separated) already shown "add an email" (1.22.3+: a new key, so a tester who saw the
         // first version of it on an older launcher sees this one)
         public string EmailPrompted;
         public Dictionary<string, object> HashCache = new Dictionary<string, object>();
         public Dictionary<string, object> Dlc = new Dictionary<string, object>();   // optional content id -> installed (bool)
+        // the packs shown to the player in the Maps & DLC tab (id -> true): a pack not in it and not installed is NEW there;
+        // null until a launcher of 2026-11-17 or later fills it (ShellForm.SendDlcState)
+        public Dictionary<string, object> DlcSeen;
         // account (lower case) -> the server's stamp of its bug reports (ms) last shown in Settings › My reports
         public Dictionary<string, object> BugsSeen = new Dictionary<string, object>();
         public Dictionary<string, object> CheatsSeen = new Dictionary<string, object>();   // the same for the cheater reports
@@ -55,21 +68,32 @@ namespace PropnightRevival
                 s.BetaCode = d.Str("BetaCode");
                 // a PC on a test channel before 1.56 (a code typed in Settings) keeps it on
                 s.TestVersion = d.ContainsKey("TestVersion") ? d.Bool("TestVersion") : Config.IsBetaCode(s.BetaCode);
+                s.TestPick = d.Str("TestPick");
                 s.LeftBeta = d.Bool("LeftBeta");
                 s.GameBuild = d.Str("GameBuild");
+                s.GameVersion = d.Str("GameVersion");
                 s.EmailPrompted = d.Str("EmailAnnounced");
                 s.DirectX11 = d.Bool("DirectX11");
                 s.MinimizeOnPlay = d.Bool("MinimizeOnPlay");
                 s.Language = d.Str("Language");
                 // "DiscordPresence": 1.16.1 saved "DiscordActivity" off for everyone (off by default then): a new key, on again
                 s.DiscordActivity = !d.ContainsKey("DiscordPresence") || d.Bool("DiscordPresence");
+                s.DiscordShowLevel = !d.ContainsKey("DiscordShowLevel") || d.Bool("DiscordShowLevel");
+                s.MessageSound = !d.ContainsKey("MessageSound") || d.Bool("MessageSound");
+                s.VoteSound = !d.ContainsKey("VoteSound") || d.Bool("VoteSound");
+                s.VoteNotify = !d.ContainsKey("VoteNotify") || d.Bool("VoteNotify");
+                if (d.ContainsKey("SoundVolume")) s.SoundVolume = (int)Math.Max(0, Math.Min(100, d.Long("SoundVolume")));
+                s.RecentEmojis = d.Str("RecentEmojis");
+                if (Themes.Contains(d.Str("Theme"))) s.Theme = d.Str("Theme");
                 if (d.ContainsKey("OverlayNotifyOnline")) s.OverlayNotifyOnline = d.Bool("OverlayNotifyOnline");
                 if (d.ContainsKey("OverlayNotifyInvites")) s.OverlayNotifyInvites = d.Bool("OverlayNotifyInvites");
                 s.OverlayTimer = d.Bool("OverlayTimer");
                 s.OverlayRight = d.Bool("OverlayRight");
                 s.OverlayFps = d.Bool("OverlayFps");
+                if (d.ContainsKey("OverlayCast")) s.OverlayCast = d.Bool("OverlayCast");
                 if (d.Obj("HashCache") is Dictionary<string, object> cache) s.HashCache = cache;
                 if (d.Obj("Dlc") is Dictionary<string, object> dlc) s.Dlc = dlc;
+                if (d.Obj("DlcSeen") is Dictionary<string, object> dlcSeen) s.DlcSeen = dlcSeen;
                 if (d.Obj("BugsSeen") is Dictionary<string, object> bugsSeen) s.BugsSeen = bugsSeen;
                 if (d.Obj("CheatsSeen") is Dictionary<string, object> cheatsSeen) s.CheatsSeen = cheatsSeen;
             }
@@ -84,11 +108,11 @@ namespace PropnightRevival
             File.WriteAllText(tmp, Json.Write(new Dictionary<string, object>
             {
                 ["GameRoot"] = GameRoot, ["Username"] = Username, ["SteamId"] = SteamId,
-                ["ProtectedToken"] = ProtectedToken, ["SaveOwner"] = SaveOwner, ["HashCache"] = HashCache, ["Dlc"] = Dlc,
-                ["BetaCode"] = BetaCode, ["TestVersion"] = TestVersion, ["LeftBeta"] = LeftBeta, ["GameBuild"] = GameBuild, ["DiscordPresence"] = DiscordActivity,
+                ["ProtectedToken"] = ProtectedToken, ["SaveOwner"] = SaveOwner, ["HashCache"] = HashCache, ["Dlc"] = Dlc, ["DlcSeen"] = DlcSeen,
+                ["BetaCode"] = BetaCode, ["TestVersion"] = TestVersion, ["TestPick"] = TestPick ?? "", ["LeftBeta"] = LeftBeta, ["GameBuild"] = GameBuild, ["GameVersion"] = GameVersion ?? "", ["DiscordPresence"] = DiscordActivity, ["DiscordShowLevel"] = DiscordShowLevel, ["MessageSound"] = MessageSound, ["VoteSound"] = VoteSound, ["VoteNotify"] = VoteNotify, ["SoundVolume"] = SoundVolume, ["RecentEmojis"] = RecentEmojis ?? "", ["Theme"] = Theme ?? "red",
                 ["EmailAnnounced"] = EmailPrompted, ["BugsSeen"] = BugsSeen, ["CheatsSeen"] = CheatsSeen,
                 ["DirectX11"] = DirectX11, ["MinimizeOnPlay"] = MinimizeOnPlay, ["Language"] = Language,
-                ["OverlayNotifyOnline"] = OverlayNotifyOnline, ["OverlayNotifyInvites"] = OverlayNotifyInvites, ["OverlayTimer"] = OverlayTimer, ["OverlayRight"] = OverlayRight, ["OverlayFps"] = OverlayFps,
+                ["OverlayNotifyOnline"] = OverlayNotifyOnline, ["OverlayNotifyInvites"] = OverlayNotifyInvites, ["OverlayTimer"] = OverlayTimer, ["OverlayRight"] = OverlayRight, ["OverlayFps"] = OverlayFps, ["OverlayCast"] = OverlayCast,
             }), Encoding.UTF8);
             if (File.Exists(FilePath)) File.Replace(tmp, FilePath, null); else File.Move(tmp, FilePath);
         }

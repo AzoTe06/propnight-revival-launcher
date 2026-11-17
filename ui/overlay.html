@@ -12,7 +12,17 @@
     --glass: rgba(12,14,22,0.62); --glass2: rgba(255,255,255,0.07); --line: rgba(255,255,255,0.12); --ink: #f4f2ef;
     --muted: #c3c1cf; --faint: #9c9db0; --accent: #ef4550; --soft: #ff8a91; --good: #4ade80; --warn: #fbbf24;
     --tint: rgba(255,255,255,0.06); --prim: rgba(255,255,255,0.16); --primline: rgba(255,255,255,0.26);
+    --acc: 239,69,80; --grad: linear-gradient(135deg, #ff5f68 0%, #ef4550 45%, #b8232f 100%);
+    /* red in every theme: the killer, losses, errors */
+    --killer: #ef4550; --killer-soft: #ff8a91; --killer-rgb: 239,69,80;
   }
+  /* the launcher's theme (Settings › Launcher › Theme), sent with the state */
+  html[data-theme="blue"] { --accent: #3b82f6; --soft: #93c5fd; --acc: 59,130,246; --grad: linear-gradient(135deg, #60a5fa 0%, #3b82f6 45%, #1d4ed8 100%); }
+  html[data-theme="violet"] { --accent: #8b5cf6; --soft: #c4b0ff; --acc: 139,92,246; --grad: linear-gradient(135deg, #a78bfa 0%, #8b5cf6 45%, #6d28d9 100%); }
+  html[data-theme="orange"] { --accent: #f97316; --soft: #fdba74; --acc: 249,115,22; --grad: linear-gradient(135deg, #fb923c 0%, #f97316 45%, #c2410c 100%); }
+  html[data-theme="green"] { --accent: #22c55e; --soft: #86efac; --acc: 34,197,94; --grad: linear-gradient(135deg, #4ade80 0%, #22c55e 45%, #15803d 100%); }
+  /* light: the overlay stays dark glass over the game (readable on any map), in the light theme's red */
+  html[data-theme="light"] { --accent: #d92d3a; --acc: 217,45,58; --grad: linear-gradient(135deg, #f0555f 0%, #d92d3a 50%, #b01e2a 100%); }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; overflow: hidden; background: #080b14; color: var(--ink);
     font-family: 'Segoe UI', system-ui, sans-serif; user-select: none; }
@@ -33,16 +43,17 @@
   .btn.prim { background: var(--prim); border-color: var(--primline); }
   .btn:hover { background: rgba(255,255,255,0.13); } .btn.prim:hover { background: rgba(255,255,255,0.24); }
   /* Join: the launcher's red button; "Joining…" waits with a spinner, the other Joins are off meanwhile */
-  .btn.go { background: linear-gradient(135deg, #ff5f68 0%, #ef4550 45%, #b8232f 100%); border-color: transparent; color: #fff;
-    box-shadow: 0 6px 18px rgba(239,69,80,0.38); }
-  .btn.go:hover { background: linear-gradient(135deg, #ff5f68 0%, #ef4550 45%, #b8232f 100%); box-shadow: 0 8px 24px rgba(239,69,80,0.55); }
+  .btn.go { background: var(--grad); border-color: transparent; color: #fff;
+    box-shadow: 0 6px 18px rgba(var(--acc),0.38); }
+  .btn.go:hover { background: var(--grad); box-shadow: 0 8px 24px rgba(var(--acc),0.55); }
   .btn.joining { pointer-events: none; opacity: 0.85; } .btn[disabled] { opacity: 0.45; pointer-events: none; }
   .bspin { width: 12px; height: 12px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff; animation: spin 0.8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .btn.done { color: var(--muted); cursor: default; } .btn.danger { border-color: rgba(239,69,80,0.6); color: var(--soft); }
+  .btn.done { color: var(--muted); cursor: default; } .btn.danger { border-color: rgba(var(--killer-rgb),0.6); color: var(--killer-soft); }
   .avatar { position: relative; flex: none; width: 40px; height: 40px; border-radius: 50%; background: var(--glass2);
     display: flex; align-items: center; justify-content: center; font-weight: 800; }
-  .avatar.accent { background: rgba(239,69,80,0.30); }
+  .avatar.accent { background: rgba(var(--acc),0.30); } .avatar.killer { background: rgba(var(--killer-rgb),0.30); }
+  .avatar img { position: absolute; inset: 0; width: 100%; height: 100%; border-radius: 50%; object-fit: cover; }
   .avatar .dot { position: absolute; right: -1px; bottom: -1px; width: 12px; height: 12px; border-radius: 50%; border: 2px solid #0c0f1a; }
   svg { flex: none; }
   /* top bar */
@@ -66,7 +77,7 @@
   .friend:hover { background: rgba(255,255,255,0.04); }
   .friend .who { flex: 1; min-width: 0; } .friend .name { font-size: 15px; font-weight: 700; }
   .friend .l1 { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .card { margin: 10px 6px 0; padding: 12px 14px; border-radius: 12px; background: rgba(239,69,80,0.16); border: 1px solid rgba(239,69,80,0.35); }
+  .card { margin: 10px 6px 0; padding: 12px 14px; border-radius: 12px; background: rgba(var(--acc),0.16); border: 1px solid rgba(var(--acc),0.35); }
   .card .row { display: flex; gap: 8px; margin-top: 10px; }
   #addRow { display: none; margin: 10px 6px 0; gap: 8px; } #addRow.open { display: flex; }
   #addRow .search { margin: 0; flex: 1; }
@@ -109,10 +120,10 @@
   body.reporting #reportScrim, body.reporting #reportBox { display: block; }
   .reasons { display: flex; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
   .reasons button { height: 34px; padding: 0 14px; border-radius: 9px; border: 1px solid var(--line); background: var(--glass2); font: 600 13px 'Segoe UI', sans-serif; }
-  .reasons button.on { background: rgba(239,69,80,0.30); border-color: rgba(239,69,80,0.6); }
+  .reasons button.on { background: rgba(var(--acc),0.30); border-color: rgba(var(--acc),0.6); }
   #reportText { width: 100%; height: 110px; resize: none; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--glass2);
     color: var(--ink); font: 14px 'Segoe UI', sans-serif; outline: none; }
-  .rerr { color: var(--soft); font-size: 13px; min-height: 18px; margin-top: 8px; }
+  .rerr { color: var(--killer-soft); font-size: 13px; min-height: 18px; margin-top: 8px; }
   #settingsView { position: absolute; left: 500px; right: 40px; top: 100px; display: none; flex-direction: column; gap: 20px; }
   #settingsView .cols { display: flex; gap: 20px; align-items: flex-start; }
   #settingsView .panel { position: relative; flex: 1; padding: 24px 26px; }
@@ -127,7 +138,7 @@
 <div id="stage">
   <header>
     <div class="logo"><b>PROPNIGHT</b><span id="barTitle">REVIVAL · OVERLAY</span></div>
-    <div class="chip"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ff8a91" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg><span style="font-size:14px;color:var(--muted)">In game for</span><b id="barSession" style="font-size:16px">-</b></div>
+    <div class="chip"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" style="stroke:var(--soft)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15 14"/></svg><span style="font-size:14px;color:var(--muted)">In game for</span><b id="barSession" style="font-size:16px">-</b></div>
     <div id="barMatch" style="font-size:14px;color:var(--muted)"></div>
     <div style="flex:1"></div>
     <span style="font-size:13px;color:var(--faint)"><kbd>Shift</kbd> + <kbd>Tab</kbd> to close</span>
@@ -225,6 +236,8 @@
         <div class="select"><span>Notifications corner</span><button onclick="send('pref',{key:'right',on:!S.prefs.right})" id="cornerBtn">Top left ▾</button></div>
         <div class="toggle" data-fps="1"><div style="font-size:14px">FPS counter</div><span class="knob"></span></div>
         <div class="toggle" data-pref="timer"><div><div style="font-size:14px">Session timer in a corner</div><div class="hint">Time since the game opened</div></div><span class="knob"></span></div>
+        <div class="toggle" data-pref="cast"><div><div style="font-size:14px">Cast HUD when spectating</div><div class="hint">Survivors, generators, the killer's abilities over the game once you are out</div></div><span class="knob"></span></div>
+        <div class="select"><span>Cast HUD for OBS<br><span class="hint" id="castUrl">Browser source, 1920 x 1080</span></span><button id="castCopy" onclick="send('castLink');this.textContent='Copied';setTimeout(()=>this.textContent='Copy link',1500)">Copy link</button></div>
       </section>
     </div>
   </div>
@@ -273,9 +286,21 @@
   }
   setInterval(clock, 1000);
 
+  // the player's profile picture (S.avatars: lower-case name -> address; a GIF moves by itself) over the initial
+  // a list written again only when it changed, its pictures kept (a GIF went back to its first frame every second)
+  function setHtml(el, html) {
+    if (el._html === html) return;
+    el._html = html;
+    const old = {};
+    el.querySelectorAll(".avatar img").forEach((i) => { (old[i.src] = old[i.src] || []).push(i); });
+    el.innerHTML = html;
+    el.querySelectorAll(".avatar img").forEach((i) => { const keep = (old[i.src] || []).shift(); if (keep) i.replaceWith(keep); });
+  }
   function avatar(name, accent, dot, size) {
     const st = size ? ` style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.42)}px"` : "";
-    return `<span class="avatar${accent ? " accent" : ""}"${st}>${esc((name || "?")[0].toUpperCase())}${dot ? `<span class="dot" style="background:${dot}"></span>` : ""}</span>`;
+    const pic = (S.avatars || {})[String(name || "").toLowerCase()];
+    const img = pic ? `<img src="${esc(pic)}" alt="" onerror="this.remove()">` : "";
+    return `<span class="avatar${accent === "killer" ? " killer" : accent ? " accent" : ""}"${st}>${esc((name || "?")[0].toUpperCase())}${img}${dot ? `<span class="dot" style="background:${dot}"></span>` : ""}</span>`;
   }
   function renderBar() {
     const g = S.game, me = (g && g.players || []).find((p) => p.you);
@@ -357,7 +382,7 @@
       html += `<div class="label group">${title} · ${shown.length}</div>` + shown.map(friendRow).join("");
     }
     if (!html) html = `<div class="empty">${S.friends.length ? (q ? "No friend by that name." : "None of your friends is online.") : "No friends yet: press Add and type their friend code."}</div>`;
-    $("flist").innerHTML = html;
+    setHtml($("flist"), html);
     const online = all.filter((f) => f.status !== "offline").length;
     $("fcount").textContent = `${online} online · ${all.length} friend${all.length === 1 ? "" : "s"}`;
     $("offCount").textContent = `Offline · ${offline.length}`;
@@ -402,7 +427,7 @@
     $("stLost").textContent = s.matches - s.won;
     // as the launcher's last match: +5 green, −5 red, 0 white
     $("stMmr").textContent = s.mmr > 0 ? "+" + s.mmr : s.mmr < 0 ? "−" + -s.mmr : "0";
-    $("stMmr").style.color = s.mmr > 0 ? "var(--good)" : s.mmr < 0 ? "var(--soft)" : "var(--ink)";
+    $("stMmr").style.color = s.mmr > 0 ? "var(--good)" : s.mmr < 0 ? "var(--killer-soft)" : "var(--ink)";
     const inMenu = !g.inMatch && (!g.role || g.role === "menu");
     const label = inMenu ? "Main menu" : g.map || "Lobby";
     $("gameMap").textContent = label;
@@ -410,9 +435,9 @@
     $("gameMap").style.backgroundImage = art ? `url("${art}")` : "";
     $("gameHost").textContent = g.role === "host" ? "You host it" : g.role === "client" ? "Hosted by another player" : "";
     const players = g.players || [];
-    $("gamePlayers").innerHTML = players.length ? players.map((p) =>
-      `<div class="player">${avatar(p.name, p.killer, null, 30)}<span style="flex:1;font-size:14px;font-weight:600">${esc(p.name)}${p.you ? " (you)" : ""}</span><span style="font-size:13px;color:${p.killer ? "var(--soft)" : "var(--muted)"}">${p.killer ? "Killer" : "Survivor"} · ${esc(characterName(p.character, p.killer))}</span><span style="font-size:13px;color:var(--faint);width:60px;text-align:right">${p.ping > 0 ? p.ping + " ms" : p.you ? "" : "host"}</span>${p.you ? '<span style="width:44px"></span>' : `<button class="btn small" title="Report ${esc(p.name)}" onclick='openReport(${JSON.stringify(p.name)})'><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg></button>`}</div>`).join("")
-      : `<div class="empty" style="padding:8px 0">${g.inMatch ? "Reading the players…" : "Not in a match: the players show here during a match."}</div>`;
+    setHtml($("gamePlayers"), players.length ? players.map((p) =>
+      `<div class="player">${avatar(p.name, p.killer ? "killer" : false, null, 30)}<span style="flex:1;font-size:14px;font-weight:600">${esc(p.name)}${p.you ? " (you)" : ""}</span><span style="font-size:13px;color:${p.killer ? "var(--killer-soft)" : "var(--muted)"}">${p.killer ? "Killer" : "Survivor"} · ${esc(characterName(p.character, p.killer))}</span><span style="font-size:13px;color:var(--faint);width:60px;text-align:right">${p.ping > 0 ? p.ping + " ms" : p.you ? "" : "host"}</span>${p.you ? '<span style="width:44px"></span>' : `<button class="btn small" title="Report ${esc(p.name)}" onclick='openReport(${JSON.stringify(p.name)})'><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg></button>`}</div>`).join("")
+      : `<div class="empty" style="padding:8px 0">${g.inMatch ? "Reading the players…" : "Not in a match: the players show here during a match."}</div>`);
   }
 
   // a player's report
@@ -493,11 +518,16 @@
       el.classList.toggle("on", on);
     });
     $("cornerBtn").textContent = (S.prefs.right ? "Top right" : "Top left") + " ▾";
+    $("castUrl").textContent = S.castUrl ? S.castUrl + " · 1920 x 1080" : "Not available";
   }
 
   // the launcher: render({...}) with what changed; open(backdrop) when the overlay shows
   function render(state) {
     Object.assign(S, state);
+    if (state.theme !== undefined) {
+      if (["blue", "violet", "orange", "green", "light"].includes(state.theme)) document.documentElement.dataset.theme = state.theme;
+      else delete document.documentElement.dataset.theme;
+    }
     if (state.open) {
       // live: the game runs behind the window (Windows blurs it); else the capture taken at the opening
       document.body.classList.toggle("live", !state.backdrop);

@@ -129,28 +129,6 @@ namespace PropnightRevival
         [StructLayout(LayoutKind.Sequential)] struct ProcessIdInfo { public IntPtr Pid; public ushort Length, MaxLength; public IntPtr Buffer; }
         [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int infoClass, ref ProcessIdInfo info, int size, out int returned);
 
-        /// <summary>Closes the game (its processes, as RunningCount counts them): a cheat tool opened during a game.</summary>
-        public static int CloseGame()
-        {
-            var closed = 0;
-            foreach (var p in Process.GetProcessesByName("Propnight"))
-            {
-                try
-                {
-                    var path = ImagePath(p.Id);
-                    if (path == null || path.EndsWith(@"\" + ExeRelative, StringComparison.OrdinalIgnoreCase)
-                        || File.Exists(Path.Combine(Path.GetDirectoryName(path), ExeRelative)))
-                    {
-                        p.Kill();
-                        closed++;
-                    }
-                }
-                catch (Exception e) { Log.Write("close game: " + e.Message); }
-                finally { p.Dispose(); }
-            }
-            return closed;
-        }
-
         [DllImport("kernel32.dll")] static extern IntPtr OpenProcess(int access, bool inherit, int pid);
         [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] static extern bool QueryFullProcessImageName(IntPtr process, int flags, StringBuilder name, ref int size);

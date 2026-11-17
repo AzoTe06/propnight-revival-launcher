@@ -66,14 +66,20 @@ FILES = [
     "Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/channel.lua",
     "Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/replay.lua",
     "Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/resume.lua",
+    "Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/teamwheel.lua",
+    "Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/antistun.lua",
     # anti-cheat: the programs that open the game to write into it (tools/guard, loaded by anticheat.lua)
     "Propnight/Binaries/Win64/Mods/PropnightLocalMap/RevivalGuard.dll",
     "Propnight/Binaries/Win64/Mods/PropnightLocalMap/online.txt",
     "Propnight/Binaries/Win64/Mods/PropnightLocalMap/avatar.png",   # squad / friends avatar picture
+    "Propnight/Binaries/Win64/Mods/PropnightLocalMap/teamwheel.png",   # the voice wheel's team page icon
+    "Propnight/Binaries/Win64/Mods/PropnightLocalMap/antistun.png",   # the killer's anti-stun shield
+    "Propnight/Binaries/Win64/Mods/PropnightLocalMap/profile.png",  # TAB: open the player's profile in the launcher
     "Propnight/Binaries/Win64/RevivalRelay/RevivalRelay.exe",
     "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalOnline_P.pak",
     # gameplay Blueprint fixes (same-length patches, tools/kismet/build_fixes_pak.py)
     "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalFixes_P.pak",
+    "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalBalance_2_P.pak",   # killer balance (build_balance_pak.py), above the fixes
     # Steam emulator (Goldberg, LGPL): the game runs without Steam's client
     "Engine/Binaries/ThirdParty/Steamworks/Steamv147/Win64/steam_api64.dll",
 ]
@@ -83,7 +89,34 @@ FILES = [
 TEST_ONLY_FILES = [
     "Propnight/Binaries/Win64/Mods/PropnightAdmin/Scripts/main.lua",
 ]
+# TeamGen (2026-11-16, a community contribution): teammates' repair / MedKit / revive progress in the HUD's player list.
+# Test channels first (main.lua loads teamgen.lua only on a test channel); move these to FILES to make it public.
+TEST_ONLY_FILES += ["Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/teamgen.lua"]
+TEST_ONLY_FILES += [f"Propnight/Binaries/Win64/Mods/PropnightLocalMap/teamgen_{n}.png"
+                    for n in ("gen", "gen_red", "medkit", "revive", "bar", "track", "knob")]
+# Ability stats (2026-11-16): an info button next to each ability in Customization, its stats in a popup. Test channels
+# first (main.lua loads abilitystats.lua only on a test channel; images: tools/abilitystats/gen_abilitystats.py).
+TEST_ONLY_FILES += ["Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/abilitystats.lua"]
+# The Possum's Doppelganger brain (2026-11-16, host only): test channels first (main.lua loads it only on a test channel)
+TEST_ONLY_FILES += ["Propnight/Binaries/Win64/Mods/PropnightLocalMap/Scripts/clonebrain.lua"]
+TEST_ONLY_FILES += [f"Propnight/Binaries/Win64/Mods/PropnightLocalMap/abilitystats_{n}.png"
+                    for n in ("info", "info_hover", "close", "close_hover", "frame", "perkbox", "perkicon", "badge", "header", "shadow")]
+# The AI bots (mod/RevivalSpawns, since 2026-11-08): the mod (asleep until the host's ADD BOT button) and the navmesh
+# levels of the classic maps that have none (loaded on the host only; the 2021 and Reborn Beta ones since 2026-11-08).
+# Public since 2026-11-09 (the big update: the AI bots for everyone).
+BOT_PARTS = [line.strip() for line in (REVIVAL / "mod/RevivalSpawns/Scripts/bots/files.txt").read_text(encoding="utf-8").splitlines()
+             if line.strip() and not line.strip().startswith("#")]
+BOT_FILES = ["Propnight/Binaries/Win64/Mods/RevivalSpawns/Scripts/main.lua",
+             "Propnight/Binaries/Win64/Mods/RevivalSpawns/Scripts/bots/files.txt"]
+BOT_FILES += [f"Propnight/Binaries/Win64/Mods/RevivalSpawns/Scripts/bots/{name}" for name in BOT_PARTS]
+# One pak with every map's navmesh level (2026-11-08: kit Tools/cook_map.py stages merged, tools/... see HANDOFF); the
+# per-map paks before it are in REMOVED_FILES
+BOT_FILES += ["Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMap_BotsNav_P.pak"]
+OLD_NAV_PAKS = [f"Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMap_{name}Nav_P.pak" for name in ("FarmDay", "Castle", "Village",
+                "Abbey2021", "Camp2021", "House2021", "CampRB", "FarmRB")]
 TEST_ONLY_MODS = ["PropnightAdmin"]
+# custom maps of the UE kit (Tools/cook_map.py --install, a local test build): their paks stay on the test channels
+CUSTOM_MAP_PAKS = [f"Propnight-WindowsNoEditor_RevivalMap_{name}_P.pak" for name in ("FarmSmallDay", "CampDay")]
 # (no large file since the classic maps DLC split, 2026-10-30)
 LARGE_FILES = []
 # Optional content (launcher DLC tab): files installed only when the player turns their pack on. Since 2026-10-30 the
@@ -111,12 +144,34 @@ DLC_FILES = {
     "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalRebornBetaFix_18_P.pak": "reborn-beta",
     # the classic packs' packages its levels and materials use (344, ~400 MB): the DLC works without any classic pack
     "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalRebornBetaClassic_19_P.pak": "reborn-beta",
+    # Keymaster's Game (2026-11-16, test channels only: TEST_ONLY_PACKS): the three 4v4 maps of May 2022 and what they
+    # use (tools/kismet/keymaster_dlc.py): levels and their art, the classic packs' packages, the 2022 hunters, the 4v4
+    # HUD. Not RevivalKeymasterOld_26_P (the old-man Keymaster, set aside: the 4v4 mode has no killer)
+    "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalKeymaster_22_P.pak": "keymaster",
+    "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalKeymasterClassic_23_P.pak": "keymaster",
+    "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalKeymasterHunter_24_P.pak": "keymaster",
+    "Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalKeymasterUI_25_P.pak": "keymaster",
 }
+# packs only the test channels (--beta / --diag) list: a public manifest (--pre-public too) has neither the pack nor its
+# files, build() refuses it otherwise; a public launcher turns their paks off at PLAY (not in the manifest: *.off-by-revival)
+TEST_ONLY_PACKS = ["keymaster"]
+TEST_ONLY_PAK_NAMES = ["RevivalKeymaster"]   # any pak so named, wherever it is listed (the old-man pak too)
+
+
+def test_only_pack_file(rel):
+    """A file only the test channels' packs install, or a Keymaster pak listed anywhere."""
+    packs = DLC_FILES.get(rel)
+    packs = [packs] if isinstance(packs, str) else packs or []
+    return (bool(packs) and all(p in TEST_ONLY_PACKS for p in packs)) or any(n in rel for n in TEST_ONLY_PAK_NAMES)
 # Files of older releases a launcher (1.50+) deletes once the files of the packs it installs are in (the one classic
 # maps DLC's paks: the same paths as the new ones', never loaded together); first when the disk lacks room for both
 REMOVED_FILES = [f"Propnight/Content/Paks/Propnight-WindowsNoEditor_{n}.pak" for n in (
     "RevivalMaps_P", "RevivalMapsPatch_1_P", "RevivalMapsPatch_2_P", "RevivalMapsFix_3_P", "RevivalMapsSchool_4_P",
-    "RevivalMapsHouse_5_P", "RevivalMapsFix_6_P", "RevivalMapsFix_7_P")]
+    "RevivalMapsHouse_5_P", "RevivalMapsFix_6_P", "RevivalMapsFix_7_P")] + OLD_NAV_PAKS
+# the EZ voices withdrawn (the user, 2026-11-10: "rollback, it is all buggy"): the voice wheels as the game has them, the
+# original Master.bank put back by the launcher (no addon in the manifest); tools/fmod/ezslot.py, ezgain.py, ezaddon.py,
+# ezwheel_dt.py and release/dlc/ez/ kept for a later try. The team wheel (teamwheel.lua) stays.
+REMOVED_FILES += ["Propnight/Content/Paks/Propnight-WindowsNoEditor_EZWheel_P.pak", "Propnight/Content/FMOD/desktop/Master.bank.ezaddon"]
 # every player: the game's own map selector list, sorted A to Z (build_modpak.py menu: RevivalMenuBase.pak)
 FILES.append("Propnight/Content/Paks/Propnight-WindowsNoEditor_RevivalMenu_P.pak")
 FILES.extend(DLC_FILES)
@@ -161,6 +216,17 @@ DLC = [{
     "maps": [
         {"name": "Camp (Reborn Beta)", "from": "October 2022", "image": "camp-reborn-beta.jpg"},
         {"name": "Farm (Reborn Beta)", "from": "October 2022", "image": "farm-reborn-beta.jpg"},
+    ],
+}, {
+    # previews: the 2022 game's own pictures of these maps (May 2022 MapScreens atlas, sprites 1 / 8 / 10)
+    "id": "keymaster",
+    "title": "Keymaster's Game",
+    "description": "The 4 vs 4 mode of 2022: hunters with guns against props, sides swap each round. Its School, House "
+                   "and Castle maps are back. Hosts pick it in Custom Game. Test version.",
+    "maps": [
+        {"name": "School (Keymaster's Game)", "from": "May 2022", "image": "school-keymaster.jpg"},
+        {"name": "House (Keymaster's Game)", "from": "May 2022", "image": "house-keymaster.jpg"},
+        {"name": "Castle (Keymaster's Game)", "from": "May 2022", "image": "castle-keymaster.jpg"},
     ],
 }]
 DLC_IMAGES = HERE / "dlc"
@@ -278,6 +344,10 @@ def patch_notes(keep=8):
 # --hold PATH...: files of the reference install that are not ready (2026-10-28: House 2022 in the maps paks) keep the
 # public release's version: their entry is copied from the public manifest, nothing of them is uploaded
 HELD = set()
+# --pre-public (2026-11-15): the public manifest, built as a public release would be, published to the beta channel
+# to try the next public update first; files its players may have that it leaves out (held files not public yet, the
+# test channels' own files) are added to its "removed" list, so the launcher takes them off as the public would not have them
+EXTRA_REMOVED = []
 
 
 def public_manifest():
@@ -303,7 +373,9 @@ def build(test=False):
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache = json.loads(cache_path.read_text()) if cache_path.exists() else {}
     entries = []
-    files = FILES + (TEST_ONLY_FILES if test else [])
+    files = FILES + BOT_FILES + (TEST_ONLY_FILES if test else [])
+    if not test:   # the test channels' packs: neither listed nor shipped
+        files = [f for f in files if not test_only_pack_file(f)]
     for rel, large in [(f, False) for f in files] + [(f, True) for f in LARGE_FILES]:
         path = GAME / rel
         if not path.is_file():
@@ -328,12 +400,15 @@ def build(test=False):
             raise SystemExit(f"--hold: not in the public release: {', '.join(new)}")
         for path in new:
             print(f"--hold: {path} is not public yet: left out")
+        EXTRA_REMOVED.extend(new)
         entries = [e for e in entries if e["path"] not in new]
         for entry in entries:
             if entry["path"] in HELD:
                 entry.update(size=public[entry["path"]]["size"], sha256=public[entry["path"]]["sha256"])
     dlc = []
     for pack in DLC:
+        if not test and pack["id"] in TEST_ONLY_PACKS:
+            continue
         pack = json.loads(json.dumps(pack))
         pack["size"] = sum(e["size"] for e in entries if pack["id"] in (e.get("dlcAny") or [e.get("dlc")]))
         for m in pack["maps"]:
@@ -346,18 +421,20 @@ def build(test=False):
         "filesUrl": r2_config()["publicUrl"].rstrip("/") + "/files/",
         "files": entries,
         "exePatch": exe_patch(),
-        "modsEnabled": ["PropnightLoginBypasser", "PropnightLocalMap"] + (TEST_ONLY_MODS if test else []),
+        "modsEnabled": ["PropnightLoginBypasser", "PropnightLocalMap", "RevivalSpawns"] + (TEST_ONLY_MODS if test else []),
         # public release: the only Lua mods a launcher (1.40.4+) lets UE4SS load: ours, whose files the launcher checks
         # (bugs 137 / 149: an old community pack loaded next to ours). Not UE4SS's stock ConsoleEnablerMod /
         # ConsoleCommandsMod / Keybinds: unused by our mod, their scripts not checked (a script put there would load),
         # and the console commands change game values. The test channels keep any mod.
-        "modsAllowed": ["PropnightLoginBypasser", "PropnightLocalMap"],
+        "modsAllowed": ["PropnightLoginBypasser", "PropnightLocalMap", "RevivalSpawns"],
         "gameDlls": {name: sorted({sha256_of(GAME / "Propnight/Binaries/Win64" / name, cache)} |
                                   ({GAME_DLLS_OLDER_BUILD[name]} if name in GAME_DLLS_OLDER_BUILD else set()))
                      for name in GAME_DLLS},
-        "paksAllowed": GAME_PAKS,
+        # (test channels: the UE kit's custom maps, installed by hand for a test, kept: the launcher turned FarmSmallDay
+        # off at PLAY, 2026-11-11)
+        "paksAllowed": GAME_PAKS + (CUSTOM_MAP_PAKS if test else []),
         "dlc": dlc,
-        "removed": REMOVED_FILES,
+        "removed": REMOVED_FILES + [p for p in EXTRA_REMOVED if p not in REMOVED_FILES],
         "notes": patch_notes(),
     }
     if LAUNCHER.is_file():
@@ -373,9 +450,12 @@ def build(test=False):
         manifest["launcher"] = public_manifest()["launcher"]
     cache_path.write_text(json.dumps(cache))
     if not test:
-        leaked = [e["path"] for e in entries if any(m in e["path"] for m in TEST_ONLY_MODS)]
+        leaked = [e["path"] for e in entries if any(m in e["path"] for m in TEST_ONLY_MODS) or e["path"] in TEST_ONLY_FILES]
         if leaked or set(TEST_ONLY_MODS) & set(manifest["modsEnabled"]):
             raise SystemExit(f"the admin menu must never reach the public release: {leaked or TEST_ONLY_MODS}")
+        leaked = [e["path"] for e in entries if test_only_pack_file(e["path"])] + [p["id"] for p in dlc if p["id"] in TEST_ONLY_PACKS]
+        if leaked:
+            raise SystemExit(f"a test channels' pack must never reach the public release: {leaked}")
     data = json.dumps(manifest, indent=2).encode()
     (HERE / "out/manifest.json").write_bytes(data)
     (HERE / "out/manifest.sig").write_bytes(base64.b64encode(sign(data)))
@@ -398,7 +478,8 @@ def upload(manifest, data, folder=""):
                       aws_secret_access_key=cfg["secretAccessKey"], region_name="auto")
     transfer = TransferConfig(multipart_threshold=64 << 20, multipart_chunksize=64 << 20, max_concurrency=4)
     sources = [(GAME / e["path"], e["sha256"], e["size"]) for e in manifest["files"] if e["path"] not in HELD]
-    for pack, src in zip(manifest["dlc"], DLC):
+    for pack in manifest["dlc"]:   # (by id: a public manifest leaves the test channels' packs out)
+        src = next(p for p in DLC if p["id"] == pack["id"])
         for m, m_src in zip(pack["maps"], src["maps"]):
             sources.append((DLC_IMAGES / m_src["image"], m["image"]["sha256"], m["image"]["size"]))
     if "launcher" in manifest and "launcher" not in HELD:
@@ -474,10 +555,16 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--beta", action="store_true", help="publish to the test channel only")
     ap.add_argument("--diag", action="store_true", help="publish to the diagnostic channel only (code diag-...)")
+    ap.add_argument("--pre-public", action="store_true", help="the public release's manifest, published to the test channel (beta)")
     ap.add_argument("--hold", nargs="+", default=[], metavar="PATH", help="keep these files (or \"launcher\") at the public release's version")
     args = ap.parse_args()
     HELD.update(args.hold)
-    manifest, data = build(test=args.beta or args.diag)
+    if args.pre_public:
+        if args.diag:
+            raise SystemExit("--pre-public goes to the beta channel")
+        args.beta = True
+        EXTRA_REMOVED.extend(TEST_ONLY_FILES)
+    manifest, data = build(test=(args.beta or args.diag) and not args.pre_public)
     total = sum(e["size"] for e in manifest["files"])
     print(f"version {manifest['version']}: {len(manifest['files'])} files, {total / 1e9:.2f} GB")
     if not args.dry_run:
