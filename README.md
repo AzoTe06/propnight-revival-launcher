@@ -1,69 +1,62 @@
-# Propnight Revival launcher
+# Propnight Revival Launcher
 
-Windows launcher for the Propnight Revival community servers. It keeps the
-revival patch up to date, signs players in and keeps their profile on the server.
+The Windows launcher for [Propnight Revival](https://propnightrevival.online).
+Propnight's official servers have shut down, and the revival brings the game back
+online with its own servers, fixes and content. The launcher installs and updates
+the revival on top of your copy of the game, signs you in, and takes you into games.
 
-Part of [Propnight Revival](https://propnightrevival.online): a fan project, not
-affiliated with the game's developers or publisher.
+It does **not** contain or download the game. Install Propnight from your own
+Steam library first. Propnight Revival is a fan project, not affiliated with the
+game's developers or publisher.
 
-It does **not** contain or download the game: install Propnight from your own
-Steam library first. The launcher only adds the revival files on top of it.
+## Features
 
-## What it does when you press PLAY
+- **One-click play:** updates the revival files and starts the game.
+- **Account:** sign in, keep your profile, progress, level and rank on the server. Your save is synced, and older copies are kept locally.
+- **Play together:**
+  - Friends, parties and invites.
+  - Join a friend's game through the revival relay, with no port forwarding.
+  - Public and custom games.
+- **Maps & DLC:** install or remove map packs, such as the classic 2021, 2022 and 2023 maps and Reborn Beta. New packs are marked as new.
+- **Community:**
+  - Suggestions with votes and comments, and polls.
+  - Patch notes and news.
+  - Bug and player reports, with the game's logs attached on request.
+- **In-game overlay:** friends, notifications and a cast HUD for streams (an OBS browser source).
+- **Test channels:** beta and diagnostic builds, opened with a code in Settings.
+- **14 languages:** English, French, German, Spanish, Italian, Portuguese (Brazil), Polish, Russian, Swedish, Turkish, Japanese, Korean, and Chinese (simplified and traditional).
 
-1. Downloads `https://api.propnightrevival.online/updates/manifest.json` and
-   checks its signature (ECDSA P-256) against the public key in
-   [`src/Common.cs`](src/Common.cs). An unsigned or modified manifest is refused
-   and nothing is changed.
-2. Compares the SHA-256 of each listed file with your install and downloads only
-   what differs. Every download is checked against the manifest before it
-   replaces anything. Game files are backed up once in
-   `steamapps\common\Propnight\revival-backups` before they are first replaced.
-3. Patches `Propnight.exe` (byte patches listed in the manifest, applied only to
-   the latest Steam build, checked before and after).
-4. Gives your account name and ID to the Steam emulator
-   (`steam_settings\force_account_name.txt`, `force_steamid.txt`).
-5. Syncs `%LOCALAPPDATA%\Propnight\Saved\SaveGames\SaveUserData.sav` with the
-   server (sent before the game starts and after every game, written back when
-   the server keeps its own copy). Older local saves are kept in
-   `%APPDATA%\PropnightRevival\save-backups`.
-6. Starts the game and stays open until it closes.
+## What happens when you press PLAY
 
-## Friends
+1. **Checks the update list.** It downloads the update manifest from `https://api.propnightrevival.online/updates/`. It checks the manifest's signature (ECDSA P-256) against the public key in [`src/Common.cs`](src/Common.cs). An unsigned or modified manifest is refused and nothing is changed.
+2. **Downloads what changed.** It compares the SHA-256 of each listed file with your install and downloads only what differs. Each download is checked against the manifest before it replaces anything. Game files are backed up once, in `steamapps\common\Propnight\revival-backups`, before they are first replaced.
+3. **Patches the game.** It applies the byte patches listed in the manifest to `Propnight.exe`. They are applied only to the latest Steam build, and checked before and after.
+4. **Syncs your save.** It sends your save to the server and writes back the server's copy when that one is newer. Older local saves are kept in `%APPDATA%\PropnightRevival\save-backups`.
+5. **Starts the game.** The launcher stays open while you play.
 
-The FRIENDS card adds players by username (requests, accept, decline, remove)
-and shows where they are: in the launcher, playing, hosting a game or in one.
-**Join** connects to a friend's game through the revival relay; **Invite** sends
-your game to a friend, who gets a notification with a Join button. Joining
-writes `joinrelay <port>` to the mod's command file (the relay address comes
-from the mod's `online.txt`), starting the game first when needed.
+Updates are always announced, never installed silently. A banner tells you when
+the launcher or the revival needs an update, and nothing is downloaded until you
+press the button.
 
-The interface (`ui/index.html`) is HTML/CSS shown with Microsoft Edge WebView2,
-which ships with Windows 10/11; the WebView2 SDK files are embedded in the exe.
-Updates are announced, never forced silently: a toast and a banner say when the
-launcher or the game needs an update, and nothing is downloaded before you press
-the button.
-
-It never asks for administrator rights. Your login token is stored encrypted
-for your Windows user (DPAPI) in `%APPDATA%\PropnightRevival\settings.json`.
+The launcher never asks for administrator rights. Your sign-in token is stored
+encrypted for your Windows user (DPAPI), in `%APPDATA%\PropnightRevival\settings.json`.
 
 ## Build
 
-Requires the .NET SDK (any recent version); the launcher targets
-.NET Framework 4.8, which is part of Windows 10 and 11.
+You need the .NET SDK (any recent version). The launcher targets .NET Framework
+4.8, which is included in Windows 10 and 11. The interface is HTML/CSS in
+[`ui/`](ui/), shown with Microsoft Edge WebView2; the WebView2 SDK files are
+embedded in the exe.
 
     dotnet build -c Release -o dist
 
-Development aid: `PROPNIGHT_LAUNCHER_SCREENSHOT=<file.png>` saves a capture of the
-interface after a few seconds (`PROPNIGHT_LAUNCHER_SCRIPT` runs JavaScript first,
-e.g. `render({...})` or `toast(...)`).
+Builds are deterministic: the same source always gives the same
+`PropnightRevival.exe`, so you can compare the SHA-256 of your build with the
+published one.
 
-`release/release.py` builds, signs and uploads an update (it needs the private
-signing key and the storage keys, which are not in this repository);
-`release/signing-public-key.txt` is the key the launcher checks against.
-
-Builds are deterministic: the same source gives the same `PropnightRevival.exe`,
-so you can compare your build's SHA-256 with the published one.
+`release/release.py` builds, signs and uploads an update. It needs the private
+signing key and the storage keys, which are not in this repository.
+`release/signing-public-key.txt` is the key the launcher checks updates against.
 
 ## License
 
